@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.firebase import get_firestore_client, initialize_firebase
 from app.repositories.football import FirestoreFootballRepository, FootballRepository
 from app.repositories.profiles import FirestoreProfileRepository, ProfileRepository
+from app.services.match_detail import EspnMatchDetailClient
 
 
 bearer = HTTPBearer(
@@ -54,3 +55,8 @@ def get_profile_repository() -> ProfileRepository:
 @lru_cache
 def get_football_repository() -> FootballRepository:
     return FirestoreFootballRepository(get_firestore_client())
+
+
+@lru_cache
+def get_match_detail_client() -> EspnMatchDetailClient:
+    return EspnMatchDetailClient()

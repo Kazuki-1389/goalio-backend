@@ -6,6 +6,7 @@ from app.api.dependencies import (
     CurrentUser,
     get_current_user,
     get_football_repository,
+    get_match_detail_client,
     get_profile_repository,
 )
 from app.main import app
@@ -56,10 +57,116 @@ class MemoryFootball:
         return PlayerPage(items=[player for player in players if query.casefold() in player.name.casefold()][:limit])
 
 
+class MemoryMatchDetail:
+    def detail(self, league: str, event_id: str):
+        from app.services.match_detail import normalize_espn_summary
+
+        return normalize_espn_summary(
+            league,
+            event_id,
+            {
+                "header": {
+                    "competitions": [
+                        {
+                            "date": "2026-06-14T17:00Z",
+                            "status": {
+                                "type": {
+                                    "abbreviation": "FT",
+                                    "detail": "Full Time",
+                                    "description": "Full Time",
+                                }
+                            },
+                            "venue": {
+                                "fullName": "Goalio Stadium",
+                                "address": {"city": "Berlin"},
+                            },
+                            "competitors": [
+                                {
+                                    "homeAway": "home",
+                                    "score": "7",
+                                    "team": {
+                                        "id": "481",
+                                        "displayName": "Germany",
+                                        "shortDisplayName": "Germany",
+                                        "abbreviation": "GER",
+                                        "logo": "https://example.com/ger.png",
+                                    },
+                                },
+                                {
+                                    "homeAway": "away",
+                                    "score": "1",
+                                    "team": {
+                                        "id": "11678",
+                                        "displayName": "Curacao",
+                                        "shortDisplayName": "Curacao",
+                                        "abbreviation": "CUW",
+                                    },
+                                },
+                            ],
+                            "details": [
+                                {
+                                    "text": "Nico Schlotterbeck Goal - Header",
+                                    "type": {"text": "Goal - Header"},
+                                    "time": {"displayValue": "38'"},
+                                    "team": {"displayName": "Germany"},
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "boxscore": {
+                    "teams": [
+                        {
+                            "team": {"id": "481"},
+                            "statistics": [
+                                {
+                                    "name": "possessionPct",
+                                    "displayName": "Possession",
+                                    "displayValue": "65%",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "leaders": [
+                    {
+                        "displayName": "Shots",
+                        "leaders": [
+                            {
+                                "displayValue": "4",
+                                "athlete": {
+                                    "id": "231182",
+                                    "displayName": "Kai Havertz",
+                                    "position": {"displayName": "Forward"},
+                                    "jersey": "7",
+                                    "links": [
+                                        {
+                                            "href": "https://www.espn.com/soccer/player/_/id/231182/kai-havertz"
+                                        }
+                                    ],
+                                },
+                                "statistics": [
+                                    {
+                                        "name": "totalShots",
+                                        "displayName": "Shots",
+                                        "displayValue": "4",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+                "commentary": [{"text": "Final whistle"}],
+                "article": {"story": "Germany won comfortably."},
+            },
+        )
+
+
 repository = MemoryProfiles()
 app.dependency_overrides[get_current_user] = lambda: CurrentUser("test-user")
 app.dependency_overrides[get_profile_repository] = lambda: repository
 app.dependency_overrides[get_football_repository] = lambda: MemoryFootball()
+app.dependency_overrides[get_match_detail_client] = lambda: MemoryMatchDetail()
 client = TestClient(app)
 
 
@@ -134,6 +241,26 @@ def test_username_availability():
     available = client.get("/api/v1/users/username/availability?username=fresh_user")
     assert available.status_code == 200
     assert available.json() == {"username": "fresh_user", "available": True}
+
+
+def test_match_detail_normalization():
+    response = client.get("/api/v1/matches/fifa.world/760422/detail")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matchId"] == "760422"
+    assert body["league"] == "fifa.world"
+    assert body["status"] == "FT"
+    assert body["statusDescription"] == "Full Time"
+    assert body["homeTeam"]["name"] == "Germany"
+    assert body["homeTeam"]["score"] == 7
+    assert body["awayTeam"]["abbreviation"] == "CUW"
+    assert body["venue"] == {"name": "Goalio Stadium", "city": "Berlin"}
+    assert body["teamStats"][0]["stats"][0]["value"] == "65%"
+    assert body["playerLeaders"][0]["players"][0]["name"] == "Kai Havertz"
+    assert body["playerLeaders"][0]["players"][0]["jersey"] == "7"
+    assert body["playerLeaders"][0]["players"][0]["espnUrl"].endswith("kai-havertz")
+    assert body["events"][0]["minute"] == "38'"
+    assert body["summary"] == "Germany won comfortably."
 
 
 def test_health_check():
