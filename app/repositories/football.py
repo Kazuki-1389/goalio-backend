@@ -61,9 +61,9 @@ class FootballRepository(Protocol):
 
     def list_players(self, limit: int, cursor: str | None) -> PlayerPage: ...
 
-    def search_teams(self, query: str, limit: int) -> list[TeamResult]: ...
+    def search_teams(self, query: str, limit: int, cursor: str | None) -> TeamPage: ...
 
-    def search_players(self, query: str, limit: int) -> list[PlayerResult]: ...
+    def search_players(self, query: str, limit: int, cursor: str | None) -> PlayerPage: ...
 
 
 class FirestoreFootballRepository:
@@ -121,9 +121,9 @@ class FirestoreFootballRepository:
         _cache.set(cache_key, page)
         return page
 
-    def search_teams(self, query: str, limit: int) -> list[TeamResult]:
+    def search_teams(self, query: str, limit: int, cursor: str | None) -> TeamPage:
         normalized = normalize_search(query)
-        cache_key = f"teams:search:{normalized}:{limit}"
+        cache_key = f"teams:search:{normalized}:{limit}:{cursor or ''}"
         cached = _cache.get(cache_key)
         if cached is not None:
             return cached
@@ -132,52 +132,69 @@ class FirestoreFootballRepository:
             if normalized:
                 snapshots = collection.where(
                     filter=FieldFilter("search_terms", "array_contains", normalized)
-                ).limit(limit).stream()
+                ).order_by("__name__")
             else:
                 snapshots = collection.where(
                     filter=FieldFilter("active", "==", True)
-                ).limit(limit).stream()
-            snapshot_list = list(snapshots)
+                ).order_by("__name__")
+            if cursor:
+                cursor_snapshot = collection.document(cursor).get()
+                if cursor_snapshot.exists:
+                    snapshots = snapshots.start_after(cursor_snapshot)
+            snapshot_list = list(snapshots.limit(limit + 1).stream())
         except GoogleAPICallError as exc:
             _raise_firestore_unavailable(exc)
-        results = [
-            TeamResult(
-                id=str(data["id"]),
-                name=data["name"],
-                shortName=data.get("code") or data["name"][:3].upper(),
-                competitionIds=[int(item) for item in data.get("competition_ids", [])],
-                imageUrl=data.get("logo"),
-            )
-            for snapshot in snapshot_list
-            for data in [snapshot.to_dict()]
-        ]
-        _cache.set(cache_key, results)
-        return results
+        has_more = len(snapshot_list) > limit
+        page_snapshots = snapshot_list[:limit]
+        page = TeamPage(
+            items=[
+                TeamResult(
+                    id=str(data["id"]),
+                    name=data["name"],
+                    shortName=data.get("code") or data["name"][:3].upper(),
+                    competitionIds=[int(item) for item in data.get("competition_ids", [])],
+                    imageUrl=data.get("logo"),
+                )
+                for snapshot in page_snapshots
+                for data in [snapshot.to_dict()]
+            ],
+            nextCursor=page_snapshots[-1].id if has_more and page_snapshots else None,
+        )
+        _cache.set(cache_key, page)
+        return page
 
-    def search_players(self, query: str, limit: int) -> list[PlayerResult]:
+    def search_players(self, query: str, limit: int, cursor: str | None) -> PlayerPage:
         normalized = normalize_search(query)
-        cache_key = f"players:search:{normalized}:{limit}"
+        cache_key = f"players:search:{normalized}:{limit}:{cursor or ''}"
         cached = _cache.get(cache_key)
         if cached is not None:
             return cached
         collection = self.client.collection("players")
         try:
             if normalized:
-                snapshots = list(
-                    collection.where(
-                        filter=FieldFilter("search_terms", "array_contains", normalized)
-                    ).limit(limit).stream()
-                )
+                query_ref = collection.where(
+                    filter=FieldFilter("search_terms", "array_contains", normalized)
+                ).order_by("__name__")
             else:
-                snapshots = list(
-                    collection.where(filter=FieldFilter("active", "==", True)).limit(limit).stream()
-                )
+                query_ref = collection.where(
+                    filter=FieldFilter("active", "==", True)
+                ).order_by("__name__")
+            if cursor:
+                cursor_snapshot = collection.document(cursor).get()
+                if cursor_snapshot.exists:
+                    query_ref = query_ref.start_after(cursor_snapshot)
+            snapshots = list(query_ref.limit(limit + 1).stream())
         except GoogleAPICallError as exc:
             _raise_firestore_unavailable(exc)
 
-        results = self._player_results([snapshot.to_dict() for snapshot in snapshots])
-        _cache.set(cache_key, results)
-        return results
+        has_more = len(snapshots) > limit
+        page_snapshots = snapshots[:limit]
+        page = PlayerPage(
+            items=self._player_results([snapshot.to_dict() for snapshot in page_snapshots]),
+            nextCursor=page_snapshots[-1].id if has_more and page_snapshots else None,
+        )
+        _cache.set(cache_key, page)
+        return page
 
     def _player_results(self, player_data: list[dict]) -> list[PlayerResult]:
         team_ids = {

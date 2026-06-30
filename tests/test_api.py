@@ -47,13 +47,13 @@ class MemoryFootball:
     def list_players(self, limit: int, cursor: str | None) -> PlayerPage:
         return PlayerPage(items=[PlayerResult(id="154", name="Lionel Messi", team="Argentina", competitionIds=[1])])
 
-    def search_teams(self, query: str, limit: int) -> list[TeamResult]:
+    def search_teams(self, query: str, limit: int, cursor: str | None) -> TeamPage:
         teams = [TeamResult(id="6", name="Brazil", shortName="BRA", competitionIds=[1])]
-        return [team for team in teams if query.casefold() in team.name.casefold()][:limit]
+        return TeamPage(items=[team for team in teams if query.casefold() in team.name.casefold()][:limit])
 
-    def search_players(self, query: str, limit: int) -> list[PlayerResult]:
+    def search_players(self, query: str, limit: int, cursor: str | None) -> PlayerPage:
         players = [PlayerResult(id="154", name="Lionel Messi", team="Argentina", competitionIds=[1])]
-        return [player for player in players if query.casefold() in player.name.casefold()][:limit]
+        return PlayerPage(items=[player for player in players if query.casefold() in player.name.casefold()][:limit])
 
 
 repository = MemoryProfiles()
@@ -99,11 +99,11 @@ def test_search_teams_and_players():
 
     teams = client.get("/api/v1/football/teams/search?q=brazil")
     assert teams.status_code == 200
-    assert [item["name"] for item in teams.json()] == ["Brazil"]
+    assert [item["name"] for item in teams.json()["items"]] == ["Brazil"]
 
     players = client.get("/api/v1/football/players/search?q=messi")
     assert players.status_code == 200
-    assert [item["name"] for item in players.json()] == ["Lionel Messi"]
+    assert [item["name"] for item in players.json()["items"]] == ["Lionel Messi"]
 
 
 def test_profile_validation():
