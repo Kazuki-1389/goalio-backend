@@ -5,8 +5,8 @@ FastAPI service for Firebase-authenticated Goalio profiles and football search.
 ## Run locally
 
 1. Create and activate a virtual environment.
-2. Install: `pip install -r requirements-dev.txt`
-3. Set `GOOGLE_APPLICATION_CREDENTIALS` to a Firebase service-account JSON file.
+2. Copy `.env.example` to `.env` and set the absolute local service-account path.
+3. Install: `pip install -r requirements-dev.txt`.
 4. Enable **Anonymous** sign-in in Firebase Console -> Authentication -> Sign-in method.
 5. Enable the [Cloud Firestore API](https://console.developers.google.com/apis/api/firestore.googleapis.com/overview?project=goalio-c42bc) and create the default Firestore database for project `goalio-c42bc`.
 6. Run: `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`.
@@ -22,14 +22,15 @@ Use a Python 3.12 web service on Render, Railway, Heroku, or another buildpack-b
 - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*"`
 - Health-check path: `/health`
 
-The included `Procfile` contains the same start command. Configure these environment variables
-on the host:
+The included `Procfile` contains the same start command. Use `.env.production.example` as the
+exact environment-variable template in Render:
 
 ```text
 APP_ENV=production
 FIREBASE_PROJECT_ID=goalio-c42bc
 ALLOWED_ORIGINS=https://your-web-client.example
 ALLOW_DEV_AUTH=false
+GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-service-account.json
 ```
 
 On Render, add a Secret File named `firebase-service-account.json`, paste the complete Firebase
