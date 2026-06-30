@@ -2,6 +2,7 @@ from typing import Protocol
 
 from fastapi import HTTPException, status
 from firebase_admin import firestore
+from google.api_core.exceptions import GoogleAPICallError
 from google.cloud.firestore_v1 import Client
 
 from app.schemas.profile import ProfileUpsert, UserProfile
@@ -10,6 +11,7 @@ from app.schemas.profile import ProfileUpsert, UserProfile
 class ProfileRepository(Protocol):
     def get(self, uid: str) -> UserProfile | None: ...
     def upsert(self, uid: str, profile: ProfileUpsert) -> UserProfile: ...
+    def is_username_available(self, username: str, uid: str) -> bool: ...
 
 
 class FirestoreProfileRepository:
@@ -17,10 +19,26 @@ class FirestoreProfileRepository:
         self.client = client
 
     def get(self, uid: str) -> UserProfile | None:
-        snapshot = self.client.collection("users").document(uid).get()
+        try:
+            snapshot = self.client.collection("users").document(uid).get()
+        except GoogleAPICallError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Cloud Firestore is unavailable. Enable the Firestore API and create the default database for this Firebase project.",
+            ) from exc
         if not snapshot.exists:
             return None
         return UserProfile(userId=uid, **snapshot.to_dict())
+
+    def is_username_available(self, username: str, uid: str) -> bool:
+        try:
+            snapshot = self.client.collection("usernames").document(username).get()
+        except GoogleAPICallError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Cloud Firestore is unavailable. Enable the Firestore API and create the default database for this Firebase project.",
+            ) from exc
+        return not snapshot.exists or snapshot.to_dict().get("userId") == uid
 
     def upsert(self, uid: str, profile: ProfileUpsert) -> UserProfile:
         user_ref = self.client.collection("users").document(uid)
@@ -50,5 +68,11 @@ class FirestoreProfileRepository:
             tx.set(user_ref, payload, merge=True)
             tx.set(username_ref, {"userId": uid, "updatedAt": firestore.SERVER_TIMESTAMP})
 
-        save_profile(transaction)
+        try:
+            save_profile(transaction)
+        except GoogleAPICallError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Cloud Firestore is unavailable. Enable the Firestore API and create the default database for this Firebase project.",
+            ) from exc
         return self.get(uid)  # type: ignore[return-value]

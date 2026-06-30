@@ -5,7 +5,11 @@ from app.schemas.football import PlayerResult, TeamResult
 from app.services.football import search_players, search_teams
 
 
-router = APIRouter(prefix="/football", tags=["football"])
+router = APIRouter(
+    prefix="/football",
+    tags=["football"],
+    responses={401: {"description": "Missing, invalid, expired, or revoked Firebase ID token"}},
+)
 
 
 @router.get("/teams/search", response_model=list[TeamResult])

@@ -10,7 +10,13 @@ from app.core.firebase import get_firestore_client, initialize_firebase
 from app.repositories.profiles import FirestoreProfileRepository, ProfileRepository
 
 
-bearer = HTTPBearer(auto_error=False)
+bearer = HTTPBearer(
+    auto_error=False,
+    description=(
+        "Firebase ID token from the Android app. For local Swagger testing only, "
+        "set ALLOW_DEV_AUTH=true and use dev:swagger-user as the token."
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -24,7 +30,11 @@ def get_current_user(
     settings = get_settings()
     if settings.allow_dev_auth and credentials and credentials.credentials.startswith("dev:"):
         return CurrentUser(credentials.credentials.removeprefix("dev:"))
-    if credentials is None or credentials.scheme.lower() != "bearer":
+    if credentials is None:
+        if settings.allow_dev_auth and settings.app_env == "development":
+            return CurrentUser("swagger-user")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing Firebase ID token")
+    if credentials.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing Firebase ID token")
     try:
         initialize_firebase()

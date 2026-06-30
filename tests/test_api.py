@@ -26,6 +26,9 @@ class MemoryProfiles:
         self.profiles[uid] = saved
         return saved
 
+    def is_username_available(self, username: str, uid: str) -> bool:
+        return all(profile.username != username or profile.userId == uid for profile in self.profiles.values())
+
 
 repository = MemoryProfiles()
 app.dependency_overrides[get_current_user] = lambda: CurrentUser("test-user")
@@ -35,7 +38,7 @@ client = TestClient(app)
 
 def test_profile_round_trip_and_personalized_home():
     payload = {
-        "name": "Aegies",
+        "name": "Aegies User",
         "username": "aegies",
         "favoriteTeams": ["Brazil", "Argentina"],
         "favoritePlayers": ["Lionel Messi", "Neymar"],
@@ -71,3 +74,15 @@ def test_profile_validation():
         json={"name": "A", "username": "Bad username"},
     )
     assert response.status_code == 422
+
+    incomplete_name = client.post(
+        "/api/v1/users/profile",
+        json={"name": "John D Doe", "username": "valid_user"},
+    )
+    assert incomplete_name.status_code == 422
+
+
+def test_username_availability():
+    available = client.get("/api/v1/users/username/availability?username=fresh_user")
+    assert available.status_code == 200
+    assert available.json() == {"username": "fresh_user", "available": True}

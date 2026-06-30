@@ -2,10 +2,17 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.dependencies import CurrentUser, get_current_user, get_profile_repository
 from app.repositories.profiles import ProfileRepository
-from app.schemas.profile import PersonalizedHome, ProfileUpsert, UserProfile
+from app.schemas.profile import PersonalizedHome, ProfileUpsert, UserProfile, UsernameAvailability
 
 
-router = APIRouter(tags=["users"])
+router = APIRouter(
+    tags=["users"],
+    responses={
+        401: {"description": "Missing, invalid, expired, or revoked Firebase ID token"},
+        503: {"description": "Cloud Firestore API/database is unavailable"},
+        422: {"description": "Invalid request data"},
+    },
+)
 
 
 @router.post("/users/profile", response_model=UserProfile)
@@ -15,6 +22,22 @@ def save_profile(
     repository: ProfileRepository = Depends(get_profile_repository),
 ) -> UserProfile:
     return repository.upsert(user.uid, payload)
+
+
+@router.get("/users/username/availability", response_model=UsernameAvailability)
+def username_availability(
+    username: str,
+    user: CurrentUser = Depends(get_current_user),
+    repository: ProfileRepository = Depends(get_profile_repository),
+) -> UsernameAvailability:
+    normalized = ProfileUpsert(
+        name="Valid Person",
+        username=username,
+    ).username
+    return UsernameAvailability(
+        username=normalized,
+        available=repository.is_username_available(normalized, user.uid),
+    )
 
 
 @router.get("/users/profile", response_model=UserProfile)
