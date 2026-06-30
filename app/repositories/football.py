@@ -61,9 +61,9 @@ class FootballRepository(Protocol):
 
     def list_players(self, limit: int, cursor: str | None) -> PlayerPage: ...
 
-    def search_teams(self, query: str) -> list[TeamResult]: ...
+    def search_teams(self, query: str, limit: int) -> list[TeamResult]: ...
 
-    def search_players(self, query: str) -> list[PlayerResult]: ...
+    def search_players(self, query: str, limit: int) -> list[PlayerResult]: ...
 
 
 class FirestoreFootballRepository:
@@ -121,9 +121,9 @@ class FirestoreFootballRepository:
         _cache.set(cache_key, page)
         return page
 
-    def search_teams(self, query: str) -> list[TeamResult]:
+    def search_teams(self, query: str, limit: int) -> list[TeamResult]:
         normalized = normalize_search(query)
-        cache_key = f"teams:search:{normalized}"
+        cache_key = f"teams:search:{normalized}:{limit}"
         cached = _cache.get(cache_key)
         if cached is not None:
             return cached
@@ -132,11 +132,11 @@ class FirestoreFootballRepository:
             if normalized:
                 snapshots = collection.where(
                     filter=FieldFilter("search_terms", "array_contains", normalized)
-                ).limit(20).stream()
+                ).limit(limit).stream()
             else:
                 snapshots = collection.where(
                     filter=FieldFilter("active", "==", True)
-                ).limit(20).stream()
+                ).limit(limit).stream()
             snapshot_list = list(snapshots)
         except GoogleAPICallError as exc:
             _raise_firestore_unavailable(exc)
@@ -154,9 +154,9 @@ class FirestoreFootballRepository:
         _cache.set(cache_key, results)
         return results
 
-    def search_players(self, query: str) -> list[PlayerResult]:
+    def search_players(self, query: str, limit: int) -> list[PlayerResult]:
         normalized = normalize_search(query)
-        cache_key = f"players:search:{normalized}"
+        cache_key = f"players:search:{normalized}:{limit}"
         cached = _cache.get(cache_key)
         if cached is not None:
             return cached
@@ -166,11 +166,11 @@ class FirestoreFootballRepository:
                 snapshots = list(
                     collection.where(
                         filter=FieldFilter("search_terms", "array_contains", normalized)
-                    ).limit(20).stream()
+                    ).limit(limit).stream()
                 )
             else:
                 snapshots = list(
-                    collection.where(filter=FieldFilter("active", "==", True)).limit(20).stream()
+                    collection.where(filter=FieldFilter("active", "==", True)).limit(limit).stream()
                 )
         except GoogleAPICallError as exc:
             _raise_firestore_unavailable(exc)

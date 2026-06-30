@@ -35,16 +35,18 @@ def players_list(
 @router.get("/teams/search", response_model=list[TeamResult])
 def teams_search(
     q: str = Query(default="", max_length=80),
+    limit: int = Query(default=6, ge=1, le=20),
     _: CurrentUser = Depends(get_current_user),
     repository: FootballRepository = Depends(get_football_repository),
 ) -> list[TeamResult]:
-    return repository.search_teams(q)
+    return repository.search_teams(q, limit)
 
 
 @router.get("/players/search", response_model=list[PlayerResult])
 def players_search(
     q: str = Query(default="", max_length=80),
+    limit: int = Query(default=6, ge=1, le=20),
     _: CurrentUser = Depends(get_current_user),
     repository: FootballRepository = Depends(get_football_repository),
 ) -> list[PlayerResult]:
-    return repository.search_players(q)
+    return repository.search_players(q, limit)

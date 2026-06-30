@@ -47,13 +47,13 @@ class MemoryFootball:
     def list_players(self, limit: int, cursor: str | None) -> PlayerPage:
         return PlayerPage(items=[PlayerResult(id="154", name="Lionel Messi", team="Argentina", competitionIds=[1])])
 
-    def search_teams(self, query: str) -> list[TeamResult]:
+    def search_teams(self, query: str, limit: int) -> list[TeamResult]:
         teams = [TeamResult(id="6", name="Brazil", shortName="BRA", competitionIds=[1])]
-        return [team for team in teams if query.casefold() in team.name.casefold()]
+        return [team for team in teams if query.casefold() in team.name.casefold()][:limit]
 
-    def search_players(self, query: str) -> list[PlayerResult]:
+    def search_players(self, query: str, limit: int) -> list[PlayerResult]:
         players = [PlayerResult(id="154", name="Lionel Messi", team="Argentina", competitionIds=[1])]
-        return [player for player in players if query.casefold() in player.name.casefold()]
+        return [player for player in players if query.casefold() in player.name.casefold()][:limit]
 
 
 repository = MemoryProfiles()
