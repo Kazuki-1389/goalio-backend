@@ -14,7 +14,7 @@ router = APIRouter(
 
 @router.get("/teams", response_model=TeamPage)
 def teams_list(
-    limit: int = Query(default=100, ge=1, le=200),
+    limit: int = Query(default=6, ge=1, le=20),
     cursor: str | None = Query(default=None, max_length=40),
     _: CurrentUser = Depends(get_current_user),
     repository: FootballRepository = Depends(get_football_repository),
@@ -24,7 +24,7 @@ def teams_list(
 
 @router.get("/players", response_model=PlayerPage)
 def players_list(
-    limit: int = Query(default=100, ge=1, le=200),
+    limit: int = Query(default=6, ge=1, le=20),
     cursor: str | None = Query(default=None, max_length=40),
     _: CurrentUser = Depends(get_current_user),
     repository: FootballRepository = Depends(get_football_repository),
