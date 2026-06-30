@@ -42,17 +42,17 @@ class MemoryProfiles:
 
 class MemoryFootball:
     def list_teams(self, limit: int, cursor: str | None) -> TeamPage:
-        return TeamPage(items=[TeamResult(id="6", name="Brazil", shortName="BRA")])
+        return TeamPage(items=[TeamResult(id="6", name="Brazil", shortName="BRA", competitionIds=[1])])
 
     def list_players(self, limit: int, cursor: str | None) -> PlayerPage:
-        return PlayerPage(items=[PlayerResult(id="154", name="Lionel Messi", team="Argentina")])
+        return PlayerPage(items=[PlayerResult(id="154", name="Lionel Messi", team="Argentina", competitionIds=[1])])
 
     def search_teams(self, query: str) -> list[TeamResult]:
-        teams = [TeamResult(id="6", name="Brazil", shortName="BRA")]
+        teams = [TeamResult(id="6", name="Brazil", shortName="BRA", competitionIds=[1])]
         return [team for team in teams if query.casefold() in team.name.casefold()]
 
     def search_players(self, query: str) -> list[PlayerResult]:
-        players = [PlayerResult(id="154", name="Lionel Messi", team="Argentina")]
+        players = [PlayerResult(id="154", name="Lionel Messi", team="Argentina", competitionIds=[1])]
         return [player for player in players if query.casefold() in player.name.casefold()]
 
 
@@ -90,10 +90,12 @@ def test_search_teams_and_players():
     all_teams = client.get("/api/v1/football/teams")
     assert all_teams.status_code == 200
     assert all_teams.json()["items"][0]["name"] == "Brazil"
+    assert all_teams.json()["items"][0]["competitionIds"] == [1]
 
     all_players = client.get("/api/v1/football/players")
     assert all_players.status_code == 200
     assert all_players.json()["items"][0]["name"] == "Lionel Messi"
+    assert all_players.json()["items"][0]["competitionIds"] == [1]
 
     teams = client.get("/api/v1/football/teams/search?q=brazil")
     assert teams.status_code == 200

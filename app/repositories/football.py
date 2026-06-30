@@ -55,6 +55,7 @@ class FirestoreFootballRepository:
                     id=str(data["id"]),
                     name=data["name"],
                     shortName=data.get("code") or data["name"][:3].upper(),
+                    competitionIds=[int(item) for item in data.get("competition_ids", [])],
                     imageUrl=data.get("logo"),
                 )
                 for snapshot in snapshots
@@ -86,6 +87,7 @@ class FirestoreFootballRepository:
                 id=str(data["id"]),
                 name=data["name"],
                 shortName=data.get("code") or data["name"][:3].upper(),
+                competitionIds=[int(item) for item in data.get("competition_ids", [])],
                 imageUrl=data.get("logo"),
             )
             for snapshot in snapshots
@@ -115,14 +117,26 @@ class FirestoreFootballRepository:
             for team_id in player.get("team_ids", [])
         }
         team_snapshots = (
-            self.client.get_all(
-                [self.client.collection("teams").document(str(team_id)) for team_id in team_ids]
+            list(
+                self.client.get_all(
+                    [
+                        self.client.collection("teams").document(str(team_id))
+                        for team_id in team_ids
+                    ]
+                )
             )
             if team_ids
             else []
         )
         team_names = {
             str(snapshot.id): snapshot.to_dict().get("name", "")
+            for snapshot in team_snapshots
+            if snapshot.exists
+        }
+        team_competitions = {
+            str(snapshot.id): [
+                int(item) for item in snapshot.to_dict().get("competition_ids", [])
+            ]
             for snapshot in team_snapshots
             if snapshot.exists
         }
@@ -134,6 +148,13 @@ class FirestoreFootballRepository:
                     team_names[str(team_id)]
                     for team_id in player.get("team_ids", [])
                     if str(team_id) in team_names
+                ),
+                competitionIds=sorted(
+                    {
+                        competition_id
+                        for team_id in player.get("team_ids", [])
+                        for competition_id in team_competitions.get(str(team_id), [])
+                    }
                 ),
                 imageUrl=player.get("photo"),
             )
