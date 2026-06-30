@@ -32,9 +32,15 @@ ALLOWED_ORIGINS=https://your-web-client.example
 ALLOW_DEV_AUTH=false
 ```
 
-For Firebase credentials, use the host's Application Default Credentials, set
-`GOOGLE_APPLICATION_CREDENTIALS` to a mounted secret file, or set the complete service-account
-JSON as the secret `FIREBASE_SERVICE_ACCOUNT_JSON`. Never commit the service-account JSON.
+On Render, add a Secret File named `firebase-service-account.json`, paste the complete Firebase
+service-account JSON as its contents, and add this environment variable:
+
+```text
+GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-service-account.json
+```
+
+Do not also set `FIREBASE_SERVICE_ACCOUNT_JSON`. That environment variable remains available as
+an alternative for hosts without secret-file support. Never commit the service-account JSON.
 
 After deployment, verify `GET /health` returns `{"status":"ok"}`, then set the Android Remote
 Config key `backend_base_url` to the deployment's HTTPS origin.
