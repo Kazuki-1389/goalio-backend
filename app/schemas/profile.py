@@ -7,8 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class ProfileUpsert(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     username: str = Field(min_length=3, max_length=20)
-    favoriteTeams: list[str] = Field(default_factory=list, max_length=20)
-    favoritePlayers: list[str] = Field(default_factory=list, max_length=20)
+    favoriteTeamIds: list[str] = Field(default_factory=list, max_length=6)
+    favoritePlayerIds: list[str] = Field(default_factory=list, max_length=6)
     onboardingCompleted: bool = True
 
     @field_validator("name")
@@ -36,19 +36,21 @@ class ProfileUpsert(BaseModel):
             raise ValueError("This username is reserved")
         return normalized
 
-    @field_validator("favoriteTeams", "favoritePlayers")
+    @field_validator("favoriteTeamIds", "favoritePlayerIds")
     @classmethod
-    def clean_favorites(cls, values: list[str]) -> list[str]:
+    def clean_favorite_ids(cls, values: list[str]) -> list[str]:
         cleaned: list[str] = []
         for value in values:
             item = value.strip()
             if item and item not in cleaned:
-                cleaned.append(item[:80])
+                cleaned.append(item[:120])
         return cleaned
 
 
 class UserProfile(ProfileUpsert):
     userId: str
+    favoriteTeams: list[str] = Field(default_factory=list)
+    favoritePlayers: list[str] = Field(default_factory=list)
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
     profileCompleted: bool = True

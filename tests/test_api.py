@@ -22,9 +22,13 @@ class MemoryProfiles:
 
     def upsert(self, uid: str, profile: ProfileUpsert) -> UserProfile:
         now = datetime.now(UTC)
+        team_names = {"6": "Brazil", "26": "Argentina"}
+        player_names = {"154": "Lionel Messi", "276": "Neymar"}
         saved = UserProfile(
             userId=uid,
             **profile.model_dump(),
+            favoriteTeams=[team_names[item] for item in profile.favoriteTeamIds],
+            favoritePlayers=[player_names[item] for item in profile.favoritePlayerIds],
             createdAt=self.profiles.get(uid, None).createdAt if uid in self.profiles else now,
             updatedAt=now,
             profileCompleted=True,
@@ -63,14 +67,15 @@ def test_profile_round_trip_and_personalized_home():
     payload = {
         "name": "Aegies User",
         "username": "aegies",
-        "favoriteTeams": ["Brazil", "Argentina"],
-        "favoritePlayers": ["Lionel Messi", "Neymar"],
+        "favoriteTeamIds": ["6", "26"],
+        "favoritePlayerIds": ["154", "276"],
         "onboardingCompleted": True,
     }
     created = client.post("/api/v1/users/profile", json=payload)
     assert created.status_code == 200
     assert created.json()["userId"] == "test-user"
     assert created.json()["profileCompleted"] is True
+    assert created.json()["favoriteTeamIds"] == ["6", "26"]
 
     loaded = client.get("/api/v1/users/profile")
     assert loaded.status_code == 200
@@ -111,6 +116,16 @@ def test_profile_validation():
         json={"name": "John D Doe", "username": "valid_user"},
     )
     assert incomplete_name.status_code == 422
+
+    too_many_favorites = client.post(
+        "/api/v1/users/profile",
+        json={
+            "name": "Valid Person",
+            "username": "valid_person",
+            "favoriteTeamIds": [str(index) for index in range(7)],
+        },
+    )
+    assert too_many_favorites.status_code == 422
 
 
 def test_username_availability():

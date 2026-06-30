@@ -40,7 +40,36 @@ class FirestoreProfileRepository:
             ) from exc
         return not snapshot.exists or snapshot.to_dict().get("userId") == uid
 
+    def _resolve_favorites(self, collection_name: str, ids: list[str]) -> list[str]:
+        if not ids:
+            return []
+        references = [
+            self.client.collection(collection_name).document(item_id)
+            for item_id in ids
+        ]
+        try:
+            snapshots = list(self.client.get_all(references))
+        except GoogleAPICallError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Cloud Firestore is unavailable while validating favorites.",
+            ) from exc
+        records = {
+            snapshot.id: snapshot.to_dict()
+            for snapshot in snapshots
+            if snapshot.exists and snapshot.to_dict().get("active") is True
+        }
+        missing = [item_id for item_id in ids if item_id not in records]
+        if missing:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"Unknown or inactive {collection_name}: {', '.join(missing)}",
+            )
+        return [records[item_id]["name"] for item_id in ids]
+
     def upsert(self, uid: str, profile: ProfileUpsert) -> UserProfile:
+        favorite_teams = self._resolve_favorites("teams", profile.favoriteTeamIds)
+        favorite_players = self._resolve_favorites("players", profile.favoritePlayerIds)
         user_ref = self.client.collection("users").document(uid)
         username_ref = self.client.collection("usernames").document(profile.username)
         transaction = self.client.transaction()
@@ -59,6 +88,8 @@ class FirestoreProfileRepository:
             payload = profile.model_dump()
             payload.update(
                 {
+                    "favoriteTeams": favorite_teams,
+                    "favoritePlayers": favorite_players,
                     "profileCompleted": True,
                     "updatedAt": firestore.SERVER_TIMESTAMP,
                 }
