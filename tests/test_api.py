@@ -10,6 +10,7 @@ from app.api.dependencies import (
     get_match_detail_client,
     get_match_detail_store,
     get_profile_repository,
+    get_scoreboard_store,
 )
 from app.main import app
 from app.schemas.football import PlayerPage, PlayerResult, TeamPage, TeamResult
@@ -336,6 +337,17 @@ class MemoryMatchDetail:
     def yahoo_lineups(self, league: str, event_id: str, detail=None):
         return []
 
+    def cached_schedule(self, league, store, date=None, from_date=None, to_date=None, force=False):
+        from app.services.match_detail import schedule_dates_to_espn, scoreboard_cache_key
+        dates = schedule_dates_to_espn(date, from_date, to_date)
+        key = scoreboard_cache_key(league, dates)
+        cached = store.get(key, 120)
+        if cached is not None and not force:
+            return cached
+        response = self.schedule(league, date=date, from_date=from_date, to_date=to_date)
+        store.write(key, response)
+        return response
+
 
 class MemoryLineupStore:
     def __init__(self):
@@ -348,6 +360,17 @@ class MemoryLineupStore:
         self.documents[response.eventId] = CachedLineup(response, content_hash)
 
 
+class MemoryScoreboardStore:
+    def __init__(self):
+        self.documents = {}
+
+    def get(self, cache_key, max_age_seconds):
+        return self.documents.get(cache_key)
+
+    def write(self, cache_key, response):
+        self.documents[cache_key] = response
+
+
 repository = MemoryProfiles()
 app.dependency_overrides[get_current_user] = lambda: CurrentUser("test-user")
 app.dependency_overrides[get_profile_repository] = lambda: repository
@@ -355,6 +378,7 @@ app.dependency_overrides[get_football_repository] = lambda: MemoryFootball()
 app.dependency_overrides[get_match_detail_client] = lambda: MemoryMatchDetail()
 app.dependency_overrides[get_match_detail_store] = lambda: MemoryMatchDetail()
 app.dependency_overrides[get_lineup_store] = lambda: MemoryLineupStore()
+app.dependency_overrides[get_scoreboard_store] = lambda: MemoryScoreboardStore()
 client = TestClient(app)
 
 
@@ -478,7 +502,7 @@ def test_match_lineup_returns_normalized_pitch_response():
     assert response.status_code == 200
     body = response.json()
     assert body["eventId"] == "760422"
-    assert body["status"] == "FINAL"
+    assert body["status"] == "PARTIAL"
     assert body["source"] == "espn"
     assert body["home"]["formation"] == "4-2-3-1"
     assert body["home"]["manager"]["name"] == "Julian Nagelsmann"

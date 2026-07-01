@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
-from app.api.dependencies import CurrentUser, get_current_user, get_lineup_store, get_match_detail_client, get_match_detail_store
+from app.api.dependencies import CurrentUser, get_current_user, get_lineup_store, get_match_detail_client, get_match_detail_store, get_scoreboard_store
 from app.schemas.lineups import MatchLineupResponse
 from app.schemas.matches import MatchDetail, ScoreboardResponse, StandingsResponse
 from app.services.lineups import LineupService, LineupStore
-from app.services.match_detail import EspnMatchDetailClient, MatchDetailStore, validate_scoreboard_dates
+from app.services.match_detail import EspnMatchDetailClient, MatchDetailStore, ScoreboardStore, validate_scoreboard_dates
+from app.core.config import get_settings
 
 
 router = APIRouter(
@@ -36,8 +37,27 @@ def match_lineup(
     _: CurrentUser = Depends(get_current_user),
     client: EspnMatchDetailClient = Depends(get_match_detail_client),
     store: LineupStore = Depends(get_lineup_store),
+    force_refresh: bool = Query(default=False, alias="forceRefresh"),
 ) -> MatchLineupResponse:
-    return LineupService(client, store).get(league, event_id)
+    if force_refresh and not (get_settings().lineup_debug or get_settings().app_env == "development"):
+        raise HTTPException(403, "forceRefresh is only available in debug/admin mode")
+    return LineupService(client, store).get(league, event_id, force=force_refresh)
+
+
+debug_router = APIRouter(prefix="/debug/matches", tags=["debug"])
+
+
+@debug_router.get("/{event_id}/lineup-sources")
+def lineup_sources(
+    event_id: str = Path(max_length=40),
+    league: str = Query(default="fifa.world", max_length=40),
+    _: CurrentUser = Depends(get_current_user),
+    client: EspnMatchDetailClient = Depends(get_match_detail_client),
+) -> dict:
+    if not (get_settings().lineup_debug or get_settings().app_env == "development"):
+        raise HTTPException(404, "Not found")
+    detail = client.espn_detail(league, event_id)
+    return client.lineup_source_diagnostics(league, event_id, detail)
 
 
 @router.get("/{league}/scoreboard", response_model=ScoreboardResponse)
@@ -69,5 +89,6 @@ def match_schedule(
     to_date: str | None = Query(default=None, alias="to", max_length=10),
     _: CurrentUser = Depends(get_current_user),
     client: EspnMatchDetailClient = Depends(get_match_detail_client),
+    store: ScoreboardStore = Depends(get_scoreboard_store),
 ) -> ScoreboardResponse:
-    return client.schedule(league, date=date, from_date=from_date, to_date=to_date)
+    return client.cached_schedule(league, store, date=date, from_date=from_date, to_date=to_date)

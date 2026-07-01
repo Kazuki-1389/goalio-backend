@@ -134,6 +134,12 @@ App flow:
 2. Render match cards using `matches[].matchId`, score, teams, kickoff, and status.
 3. When a user taps a match, call `GET /api/v1/matches/eng.1/{matchId}/detail`.
 
+Live score schedules are shared through Firestore collection `match_scoreboards`. The API serves a
+cached schedule for at most 120 seconds, then refreshes it from ESPN and writes it back. Run the
+Procfile `worker` process (or invoke `python -m app.jobs.sync_live_scores` from Cloud Scheduler every
+two minutes) so scores continue updating even when no app client is currently open. Match-detail
+documents also remain due every 120 seconds after kickoff until the match reaches a final state.
+
 For `/schedule`, use `date=YYYY-MM-DD` or `from=YYYY-MM-DD&to=YYYY-MM-DD`.
 For lower-level `/scoreboard`, `dates` must be `YYYYMMDD` or `YYYYMMDD-YYYYMMDD`.
 For example, use `20260609`, not `2026069`.

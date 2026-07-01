@@ -2,6 +2,8 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import re
+from html import unescape
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from typing import Any, Protocol
 
 import httpx
@@ -50,6 +52,51 @@ class MatchDetailStore(Protocol):
     def is_due(self, league: str, event_id: str) -> bool: ...
 
     def write_if_changed(self, detail: MatchDetail) -> bool: ...
+
+
+class ScoreboardStore(Protocol):
+    def get(self, cache_key: str, max_age_seconds: int) -> ScoreboardResponse | None: ...
+    def write(self, cache_key: str, response: ScoreboardResponse) -> None: ...
+
+
+class FirestoreScoreboardStore:
+    collection_name = "match_scoreboards"
+
+    def __init__(self, client: Client):
+        self.client = client
+
+    def _ref(self, cache_key: str):
+        return self.client.collection(self.collection_name).document(cache_key)
+
+    def get(self, cache_key: str, max_age_seconds: int) -> ScoreboardResponse | None:
+        snapshot = self._ref(cache_key).get()
+        if not snapshot.exists:
+            return None
+        data = snapshot.to_dict() or {}
+        fetched_at = data.get("_fetchedAt")
+        if hasattr(fetched_at, "timestamp"):
+            age = datetime.now(timezone.utc).timestamp() - fetched_at.timestamp()
+        else:
+            parsed = _parse_datetime(_string(fetched_at))
+            age = (datetime.now(timezone.utc) - parsed).total_seconds() if parsed else max_age_seconds + 1
+        if age >= max_age_seconds:
+            return None
+        try:
+            return ScoreboardResponse(**{key: value for key, value in data.items() if not key.startswith("_")})
+        except (TypeError, ValueError):
+            return None
+
+    def write(self, cache_key: str, response: ScoreboardResponse) -> None:
+        payload = response.model_dump(mode="json")
+        content_hash = _stable_hash(payload)
+        ref = self._ref(cache_key)
+        # Always advance freshness; only score/status payload changes affect the content hash.
+        ref.set({**payload, "_hash": content_hash, "_fetchedAt": firestore.SERVER_TIMESTAMP})
+
+
+def scoreboard_cache_key(league: str, dates: str | None) -> str:
+    raw = f"{league}:{dates or 'current'}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class FirestoreMatchDetailStore:
@@ -153,6 +200,31 @@ class EspnMatchDetailClient:
     def yahoo_lineups(self, league: str, event_id: str, detail: MatchDetail | None = None) -> list[TeamLineup]:
         return self._lineups_from_yahoo_sports(league, event_id, detail)
 
+    def lineup_source_diagnostics(self, league: str, event_id: str, detail: MatchDetail) -> dict[str, dict[str, Any]]:
+        """Fetch small, safe diagnostics; never exposes complete third-party bodies."""
+        query = _lineup_search_query(league, event_id, detail)
+        sources = {
+            "espn": (f"{self.base_url}/{league}/summary?event={quote_plus(event_id)}", None),
+            "google": (f"https://www.google.com/search?q={quote_plus(query)}", None),
+            "yahoo": (f"https://search.yahoo.com/search?p={quote_plus('site:sports.yahoo.com ' + query)}", None),
+        }
+        result: dict[str, dict[str, Any]] = {}
+        for name, (url, _) in sources.items():
+            try:
+                response = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 Goalio/1.0"}, timeout=self.timeout, follow_redirects=True)
+                clean = _clean_visible_text(response.text)
+                keywords = _found_lineup_keywords(clean, detail)
+                extracted = _lineups_from_html(response.text)
+                if name == "espn":
+                    try:
+                        extracted = _lineups_from_any_json(response.json()) or extracted
+                    except ValueError:
+                        pass
+                result[name] = _source_debug(url, response.status_code, response.text, clean, keywords, extracted)
+            except httpx.HTTPError as exc:
+                result[name] = {"url": url, "httpStatus": None, "bodyLength": 0, "keywordsFound": [], "safeTextPreview": "", "homePlayersExtracted": 0, "awayPlayersExtracted": 0, "reason": str(exc)[:200]}
+        return result
+
     def _lineups_from_fallbacks(self, league: str, event_id: str, detail: MatchDetail) -> list[TeamLineup]:
         return (
             self._lineups_from_espn_hidden_api(league, event_id)
@@ -204,7 +276,7 @@ class EspnMatchDetailClient:
             except (httpx.HTTPError, ValueError):
                 continue
             competition = _competition(payload)
-            lineups = _lineups(_as_dict(payload.get("boxscore")), competition.get("competitors") or [])
+            lineups = _lineups_from_any_json(payload)
             if lineups:
                 return lineups
         return []
@@ -247,10 +319,7 @@ class EspnMatchDetailClient:
             search.raise_for_status()
         except httpx.HTTPError:
             return []
-        links = [
-            link.replace("&amp;", "&")
-            for link in re.findall(r'https?://sports\.yahoo\.com/[^"<> ]+', search.text)
-        ]
+        links = _discover_yahoo_links(search.text)
         for link in dict.fromkeys(links):
             try:
                 response = httpx.get(link, headers=headers, timeout=self.timeout, follow_redirects=True)
@@ -266,6 +335,25 @@ class EspnMatchDetailClient:
         _validate_league(league)
         validate_scoreboard_dates(dates)
         return self._scoreboard(league, dates, schedule_date=None)
+
+    def cached_schedule(
+        self,
+        league: str,
+        store: ScoreboardStore,
+        date: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        force: bool = False,
+    ) -> ScoreboardResponse:
+        dates = schedule_dates_to_espn(date, from_date, to_date)
+        key = scoreboard_cache_key(league, dates)
+        if not force:
+            cached = store.get(key, max_age_seconds=120)
+            if cached is not None:
+                return cached
+        fresh = self.schedule(league, date=date, from_date=from_date, to_date=to_date)
+        store.write(key, fresh)
+        return fresh
 
     def standings(self, league: str, season: int | None = None) -> StandingsResponse:
         _validate_league(league)
@@ -574,10 +662,11 @@ def _next_refresh_at(detail: MatchDetail) -> datetime | None:
     kickoff = _parse_datetime(detail.kickoff)
     if kickoff is None:
         return None
-    if detail.statusDescription and detail.statusDescription.casefold() in {"ft", "full time", "final"}:
+    state_text = f"{detail.status or ''} {detail.statusDescription or ''}".casefold()
+    if any(value in state_text for value in ("full time", "final", " ft", "aet", "pens")):
         return None
-    if detail.status and detail.status.casefold() in {"ft", "aet", "pen"}:
-        return None
+    if any(value in state_text for value in ("live", "half", "in progress")) or re.search(r"\b\d{1,3}(?:\+\d+)?['’]", state_text):
+        return now + timedelta(seconds=120)
     windows = (
         kickoff - timedelta(hours=24),
         kickoff - timedelta(minutes=30),
@@ -586,7 +675,8 @@ def _next_refresh_at(detail: MatchDetail) -> datetime | None:
     for window in windows:
         if now < window:
             return window
-    return None
+    # Kickoff has passed but ESPN has not yet marked the match final: keep polling.
+    return now + timedelta(seconds=120)
 
 
 def _scoreboard_competition(event: dict[str, Any]) -> dict[str, Any]:
@@ -941,7 +1031,7 @@ def _lineup_search_query(league: str, event_id: str, detail: MatchDetail | None)
         team.shortName or team.name
         for team in (detail.homeTeam, detail.awayTeam) if team is not None
     ] if detail else []
-    return " ".join([*teams, "football lineups", league, event_id])
+    return " ".join([*teams, "lineups football"])
 
 
 def _embedded_json_candidates(html: str) -> list[str]:
@@ -951,6 +1041,7 @@ def _embedded_json_candidates(html: str) -> list[str]:
         r'<script[^>]+type="application/(?:ld\+)?json"[^>]*>(.*?)</script>',
         r"window\.__espnfitt__\s*=\s*({.*?});",
         r"window\['__espnfitt__'\]\s*=\s*({.*?});",
+        r'<script[^>]+type="application/json"[^>]*>(.*?)</script>',
     ):
         candidates.extend(re.findall(pattern, html, flags=re.DOTALL))
     return candidates
@@ -958,6 +1049,10 @@ def _embedded_json_candidates(html: str) -> list[str]:
 
 def _lineups_from_any_json(value: Any) -> list[TeamLineup]:
     if isinstance(value, dict):
+        if isinstance(value.get("rosters"), list):
+            lineups = _lineups({"teams": value["rosters"]}, _competition(value).get("competitors") or [])
+            if lineups:
+                return lineups
         if "boxscore" in value:
             competition = _competition(value)
             lineups = _lineups(_as_dict(value.get("boxscore")), competition.get("competitors") or [])
@@ -977,6 +1072,39 @@ def _lineups_from_any_json(value: Any) -> list[TeamLineup]:
             if lineups:
                 return lineups
     return []
+
+
+def _clean_visible_text(html: str) -> str:
+    text = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", unescape(text)).strip()
+
+
+def _found_lineup_keywords(text: str, detail: MatchDetail) -> list[str]:
+    candidates = ["lineups", "lineup", "starting xi", "substitutes", "formation", "bench"]
+    candidates += [team.shortName or team.name for team in (detail.homeTeam, detail.awayTeam) if team]
+    folded = text.casefold()
+    return [item for item in candidates if item and item.casefold() in folded]
+
+
+def _source_debug(url: str, status_code: int, body: str, clean: str, keywords: list[str], lineups: list[TeamLineup]) -> dict[str, Any]:
+    counts = [len(team.starters) for team in lineups]
+    return {"url": url, "httpStatus": status_code, "bodyLength": len(body.encode("utf-8")), "keywordsFound": keywords,
+            "safeTextPreview": clean[:500], "homePlayersExtracted": counts[0] if counts else 0,
+            "awayPlayersExtracted": counts[1] if len(counts) > 1 else 0,
+            "reason": None if any(counts) else "lineup section not present or unsupported shape"}
+
+
+def _discover_yahoo_links(html: str) -> list[str]:
+    links: list[str] = []
+    for raw in re.findall(r'https?://[^"<> ]+', unescape(html)):
+        candidate = raw.rstrip("').,\\")
+        parsed = urlparse(candidate)
+        redirect = parse_qs(parsed.query).get("RU") or parse_qs(parsed.query).get("url")
+        candidate = unquote(redirect[0]) if redirect else candidate
+        if urlparse(candidate).hostname in {"sports.yahoo.com", "uk.sports.yahoo.com"}:
+            links.append(candidate)
+    return list(dict.fromkeys(links))
 
 
 def _team_stats(boxscore: Any) -> list[TeamStats]:

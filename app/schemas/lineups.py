@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-LineupStatus = Literal["NOT_AVAILABLE", "PROBABLE", "CONFIRMED", "LIVE", "FINAL"]
+LineupStatus = Literal["NOT_AVAILABLE", "PARTIAL", "PROBABLE", "CONFIRMED", "LIVE", "FINAL"]
 LineupSource = Literal["espn", "google", "yahoo", "cache", "generated"]
 FormationStatus = Literal["CONFIRMED", "ESTIMATED", "UNKNOWN"]
 
@@ -53,3 +53,4 @@ class MatchLineupResponse(BaseModel):
     isStale: bool = False
     home: NormalizedTeamLineup
     away: NormalizedTeamLineup
+    fetchAttempts: dict[str, dict] | None = None

@@ -25,6 +25,7 @@ app.add_middleware(
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(football.router, prefix="/api/v1")
 app.include_router(matches.router, prefix="/api/v1")
+app.include_router(matches.debug_router, prefix="/api/v1")
 app.include_router(worldcup.router, prefix="/api/v1")
 app.include_router(matches.router, prefix="/api", include_in_schema=False)
 
