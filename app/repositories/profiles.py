@@ -1,7 +1,7 @@
 from typing import Protocol
 
 from fastapi import HTTPException, status
-from firebase_admin import firestore
+from firebase_admin import auth, firestore
 from google.api_core.exceptions import GoogleAPICallError
 from google.cloud.firestore_v1 import Client
 
@@ -12,6 +12,7 @@ class ProfileRepository(Protocol):
     def get(self, uid: str) -> UserProfile | None: ...
     def upsert(self, uid: str, profile: ProfileUpsert) -> UserProfile: ...
     def is_username_available(self, username: str, uid: str) -> bool: ...
+    def profile_login(self, name: str, username: str) -> str: ...
 
 
 class FirestoreProfileRepository:
@@ -39,6 +40,20 @@ class FirestoreProfileRepository:
                 "Cloud Firestore is unavailable. Enable the Firestore API and create the default database for this Firebase project.",
             ) from exc
         return not snapshot.exists or snapshot.to_dict().get("userId") == uid
+
+    def profile_login(self, name: str, username: str) -> str:
+        normalized_username = username.strip().lower()
+        normalized_name = " ".join(name.strip().split()).casefold()
+        username_snapshot = self.client.collection("usernames").document(normalized_username).get()
+        if not username_snapshot.exists:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Full name or username did not match")
+        uid = username_snapshot.to_dict().get("userId")
+        user_snapshot = self.client.collection("users").document(uid).get() if uid else None
+        stored_name = " ".join((user_snapshot.to_dict().get("name") if user_snapshot and user_snapshot.exists else "").strip().split()).casefold()
+        if not uid or stored_name != normalized_name:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Full name or username did not match")
+        token = auth.create_custom_token(uid)
+        return token.decode("utf-8") if isinstance(token, bytes) else str(token)
 
     def _resolve_favorites(self, collection_name: str, ids: list[str]) -> list[str]:
         if not ids:

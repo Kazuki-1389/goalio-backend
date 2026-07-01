@@ -51,6 +51,13 @@ class MemoryProfiles:
     def is_username_available(self, username: str, uid: str) -> bool:
         return all(profile.username != username or profile.userId == uid for profile in self.profiles.values())
 
+    def profile_login(self, name: str, username: str) -> str:
+        profile = next((item for item in self.profiles.values() if item.username == username.strip().lower() and item.name.casefold() == " ".join(name.split()).casefold()), None)
+        if profile is None:
+            from fastapi import HTTPException
+            raise HTTPException(401, "Full name or username did not match")
+        return f"token-for-{profile.userId}"
+
 
 class MemoryFootball:
     def list_teams(self, limit: int, cursor: str | None) -> TeamPage:
@@ -429,6 +436,11 @@ def test_profile_round_trip_and_personalized_home():
     home = client.get("/api/v1/home")
     assert home.status_code == 200
     assert home.json()["greeting"] == "Welcome back, Aegies"
+    login = client.post("/api/v1/auth/profile-login", json={"name": "Aegies User", "username": "aegies"})
+    assert login.status_code == 200
+    assert login.json()["customToken"] == "token-for-test-user"
+    denied = client.post("/api/v1/auth/profile-login", json={"name": "Wrong Person", "username": "aegies"})
+    assert denied.status_code == 401
 
 
 def test_search_teams_and_players():
