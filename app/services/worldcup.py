@@ -22,7 +22,7 @@ WORLD_CUP_LEAGUE = "fifa.world"
 WORLD_CUP_FINAL = date(2026, 7, 19)
 
 ROUND_MATCH_ORDER = {
-    "R32": [74, 77, 73, 75, 83, 84, 81, 82, 76, 78, 79, 80, 86, 88, 85, 87],
+    "R32": [73, 75, 74, 77, 83, 84, 81, 82, 76, 78, 79, 80, 86, 88, 85, 87],
     "R16": [89, 90, 93, 94, 91, 92, 95, 96],
     "QF": [97, 98, 99, 100],
     "SF": [101, 102],
@@ -30,7 +30,21 @@ ROUND_MATCH_ORDER = {
 }
 ROUND_CODES = ("R32", "R16", "QF", "SF", "FINAL")
 ROUND_SLOT_COUNTS = {"R32": 16, "R16": 8, "QF": 4, "SF": 2, "FINAL": 1}
-NEXT_ROUND = {"R32": "R16", "R16": "QF", "QF": "SF", "SF": "FINAL"}
+NEXT_SLOT_TOPOLOGY = {
+    "R32": [("R16", index // 2, "home" if index % 2 == 0 else "away") for index in range(16)],
+    "R16": [
+        ("QF", 0, "away"),
+        ("QF", 0, "home"),
+        ("QF", 1, "home"),
+        ("QF", 1, "away"),
+        ("QF", 2, "home"),
+        ("QF", 2, "away"),
+        ("QF", 3, "home"),
+        ("QF", 3, "away"),
+    ],
+    "QF": [("SF", index // 2, "home" if index % 2 == 0 else "away") for index in range(4)],
+    "SF": [("FINAL", 0, "home" if index == 0 else "away") for index in range(2)],
+}
 
 
 LIBRARY_ITEMS = [
@@ -150,7 +164,7 @@ def _bracket(matches: list[ScoreboardMatch]) -> WorldCupBracket:
         number_slots = {number: index for index, number in enumerate(ROUND_MATCH_ORDER[round_code])}
 
         for match, match_number in sorted(candidates[round_code], key=lambda item: _candidate_sort_key(item[0])):
-            slot_index = number_slots.get(match_number) if match_number is not None else None
+            slot_index = number_slots.get(match_number) if match_number is not None else _placeholder_slot_hint(match, round_code)
             if slot_index is None:
                 unslotted.append(match)
                 continue
@@ -169,11 +183,37 @@ def _bracket(matches: list[ScoreboardMatch]) -> WorldCupBracket:
                 )
         normalized[round_code] = [slot for slot in slots if slot is not None]
 
+    _validate_normalized_bracket(normalized)
     return WorldCupBracket(
         tournament="FIFA World Cup",
         bracketType="32_TEAM_KNOCKOUT",
         rounds=normalized,
     )
+
+
+def _validate_normalized_bracket(rounds: dict[str, list[WorldCupBracketMatch]]) -> None:
+    for round_code, expected_count in ROUND_SLOT_COUNTS.items():
+        matches = rounds.get(round_code, [])
+        if len(matches) != expected_count:
+            raise ValueError(f"{round_code} must contain {expected_count} bracket slots")
+        if [match.slotIndex for match in matches] != list(range(expected_count)):
+            raise ValueError(f"{round_code} slot indexes must be contiguous")
+
+    incoming: dict[tuple[str, int], list[WorldCupNextMatchSlot]] = {}
+    for round_code in ROUND_CODES[:-1]:
+        for match in rounds[round_code]:
+            target = match.nextMatchSlot
+            if target is None:
+                raise ValueError(f"{round_code} slot {match.slotIndex} has no next match")
+            if target.slotIndex >= len(rounds[target.round]):
+                raise ValueError(f"{round_code} slot {match.slotIndex} points outside {target.round}")
+            incoming.setdefault((target.round, target.slotIndex), []).append(target)
+
+    for target_round in ROUND_CODES[1:]:
+        for target in rounds[target_round]:
+            sources = incoming.get((target_round, target.slotIndex), [])
+            if len(sources) != 2 or {source.teamPosition for source in sources} != {"home", "away"}:
+                raise ValueError(f"{target_round} slot {target.slotIndex} must receive home and away sources")
 
 
 def _normalized_match(match: ScoreboardMatch, round_code: str, slot_index: int) -> WorldCupBracketMatch:
@@ -195,12 +235,15 @@ def _normalized_match(match: ScoreboardMatch, round_code: str, slot_index: int) 
 
 
 def _placeholder_match(round_code: str, slot_index: int) -> WorldCupBracketMatch:
-    source_round = {"R16": "R32", "QF": "R16", "SF": "QF", "FINAL": "SF"}.get(round_code)
-    if source_round is None:
+    incoming = _incoming_slots(round_code, slot_index)
+    if not incoming:
         home_team = away_team = "TBD"
     else:
-        home_team = f"Winner of {source_round} Match {slot_index * 2 + 1}"
-        away_team = f"Winner of {source_round} Match {slot_index * 2 + 2}"
+        by_position = {position: (source_round, source_slot) for source_round, source_slot, position in incoming}
+        home_source = by_position.get("home")
+        away_source = by_position.get("away")
+        home_team = _winner_label(home_source)
+        away_team = _winner_label(away_source)
     return WorldCupBracketMatch(
         eventId=f"wc2026-{round_code.lower()}-{slot_index}",
         round=round_code,
@@ -213,14 +256,31 @@ def _placeholder_match(round_code: str, slot_index: int) -> WorldCupBracketMatch
 
 
 def _next_match_slot(round_code: str, slot_index: int) -> WorldCupNextMatchSlot | None:
-    next_round = NEXT_ROUND.get(round_code)
-    if next_round is None:
+    topology = NEXT_SLOT_TOPOLOGY.get(round_code)
+    if topology is None or slot_index not in range(len(topology)):
         return None
+    next_round, next_slot, team_position = topology[slot_index]
     return WorldCupNextMatchSlot(
         round=next_round,
-        slotIndex=slot_index // 2,
-        teamPosition="home" if slot_index % 2 == 0 else "away",
+        slotIndex=next_slot,
+        teamPosition=team_position,
     )
+
+
+def _incoming_slots(target_round: str, target_slot: int) -> list[tuple[str, int, str]]:
+    incoming: list[tuple[str, int, str]] = []
+    for source_round, destinations in NEXT_SLOT_TOPOLOGY.items():
+        for source_slot, (round_code, slot_index, position) in enumerate(destinations):
+            if round_code == target_round and slot_index == target_slot:
+                incoming.append((source_round, source_slot, position))
+    return incoming
+
+
+def _winner_label(source: tuple[str, int] | None) -> str:
+    if source is None:
+        return "TBD"
+    source_round, source_slot = source
+    return f"Winner of {source_round} Match {source_slot + 1}"
 
 
 def _round_code(match: ScoreboardMatch, match_number: int | None) -> str | None:
@@ -274,6 +334,33 @@ def _placeholder_target_round(*team_names: str | None) -> str | None:
     return next((round_code for pattern, round_code in checks if re.search(pattern, joined)), None)
 
 
+def _placeholder_slot_hint(match: ScoreboardMatch, target_round: str) -> int | None:
+    references: list[tuple[str, int]] = []
+    patterns = {
+        "R32": r"(?:RD?32|R32)\s*W\s*(\d+)|WINNER\s+OF\s+R32\s+MATCH\s+(\d+)",
+        "R16": r"(?:RD?16|R16)\s*W\s*(\d+)|WINNER\s+OF\s+R16\s+MATCH\s+(\d+)",
+        "QF": r"QF\s*W\s*(\d+)|WINNER\s+OF\s+QF\s+MATCH\s+(\d+)",
+        "SF": r"SF\s*W\s*(\d+)|WINNER\s+OF\s+SF\s+MATCH\s+(\d+)",
+    }
+    for team_name in (_team_name(match.homeTeam), _team_name(match.awayTeam)):
+        if not team_name:
+            continue
+        for source_round, pattern in patterns.items():
+            found = re.search(pattern, team_name, re.IGNORECASE)
+            if found:
+                source_number = int(next(group for group in found.groups() if group is not None))
+                references.append((source_round, source_number - 1))
+
+    targets = {
+        topology[source_slot][1]
+        for source_round, source_slot in references
+        if (topology := NEXT_SLOT_TOPOLOGY.get(source_round)) is not None
+        and source_slot in range(len(topology))
+        and topology[source_slot][0] == target_round
+    }
+    return next(iter(targets)) if len(targets) == 1 else None
+
+
 def _normalized_team_name(value: str | None) -> str | None:
     if not value:
         return None
@@ -292,13 +379,13 @@ def _team_name(team: Any) -> str | None:
     return team.shortName or team.name
 
 
-def _candidate_sort_key(match: ScoreboardMatch) -> tuple[int, str, str]:
+def _candidate_sort_key(match: ScoreboardMatch) -> tuple[int, str]:
     placeholder_count = sum(
         1
         for name in (_team_name(match.homeTeam), _team_name(match.awayTeam))
         if _is_placeholder_team(name)
     )
-    return placeholder_count, match.kickoff or "", match.matchId
+    return placeholder_count, match.matchId
 
 
 def _is_placeholder_team(value: str | None) -> bool:
