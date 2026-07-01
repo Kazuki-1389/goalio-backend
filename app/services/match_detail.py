@@ -106,7 +106,7 @@ class EspnMatchDetailClient:
 
     def cached_detail(self, league: str, event_id: str, store: MatchDetailStore) -> MatchDetail:
         cached = store.get(league, event_id)
-        if cached is not None and not store.is_due(league, event_id):
+        if cached is not None and cached.lineups and not store.is_due(league, event_id):
             return cached
         fresh = self.detail(league, event_id)
         store.write_if_changed(fresh)
@@ -135,17 +135,48 @@ class EspnMatchDetailClient:
             ) from exc
         detail = normalize_espn_summary(league, event_id, response.json())
         if not detail.lineups:
-            lineups = self._lineups_from_fallbacks(league, event_id)
+            lineups = self._lineups_from_fallbacks(league, event_id, detail)
             if lineups:
                 detail.lineups = lineups
         return detail
 
-    def _lineups_from_fallbacks(self, league: str, event_id: str) -> list[TeamLineup]:
+    def _lineups_from_fallbacks(self, league: str, event_id: str, detail: MatchDetail) -> list[TeamLineup]:
         return (
             self._lineups_from_espn_hidden_api(league, event_id)
             or self._lineups_from_google_sports(league, event_id)
             or self._lineups_from_espn_match_page(league, event_id)
+            or self._squad_lineups(detail)
         )
+
+    def _squad_lineups(self, detail: MatchDetail) -> list[TeamLineup]:
+        lineups = []
+        for team in (detail.homeTeam, detail.awayTeam):
+            if team is None:
+                continue
+            try:
+                response = httpx.get(
+                    f"{self.base_url}/{detail.league}/teams/{team.id}/roster",
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (httpx.HTTPError, ValueError):
+                continue
+            players = [_lineup_player({"athlete": athlete, "substitute": True}) for athlete in payload.get("athletes") or []]
+            players = [player for player in players if player is not None]
+            coach = _coach_name(payload.get("coach")) or _coach_name(payload.get("coaches"))
+            if players or coach:
+                lineups.append(
+                    TeamLineup(
+                        teamId=team.id,
+                        teamName=team.shortName or team.name,
+                        formation=None,
+                        coach=coach,
+                        starters=[],
+                        substitutes=players[:30],
+                    )
+                )
+        return lineups
 
     def _lineups_from_espn_hidden_api(self, league: str, event_id: str) -> list[TeamLineup]:
         urls = (
@@ -670,10 +701,19 @@ def _lineups(boxscore: dict[str, Any], competitors: list[Any]) -> list[TeamLineu
         athletes = (
             lineup_source.get("athletes")
             or lineup_source.get("players")
+            or lineup_source.get("roster")
+            or lineup_source.get("entries")
             or team_block.get("athletes")
             or team_block.get("players")
+            or team_block.get("roster")
             or []
         )
+        if not athletes:
+            for stat_group in team_block.get("statistics") or []:
+                group_dict = _as_dict(stat_group)
+                athletes = group_dict.get("athletes") or group_dict.get("players") or []
+                if athletes:
+                    break
         players = []
         for player in athletes if isinstance(athletes, list) else []:
             parsed = _lineup_player(player)
@@ -707,8 +747,13 @@ def _lineup_player(value: Any) -> LineupPlayer | None:
     name = _string(athlete.get("displayName")) or _string(athlete.get("fullName")) or _string(athlete.get("name"))
     if not name:
         return None
-    starter = bool(item.get("starter") or item.get("isStarter") or item.get("starting"))
-    substitute = bool(item.get("substitute") or item.get("isSubstitute"))
+    starter = _truthy(item.get("starter")) or _truthy(item.get("isStarter")) or _truthy(item.get("starting"))
+    substitute = _truthy(item.get("substitute")) or _truthy(item.get("isSubstitute")) or _truthy(item.get("bench"))
+    lineup_status = (_string(item.get("lineupStatus")) or _string(item.get("status")) or "").casefold()
+    if lineup_status in {"starter", "starting", "starting xi"}:
+        starter = True
+    if lineup_status in {"substitute", "bench"}:
+        substitute = True
     position = _as_dict(athlete.get("position")) or _as_dict(item.get("position"))
     formation_place = _string(item.get("formationPlace")) or _string(item.get("formation_place"))
     return LineupPlayer(
@@ -724,6 +769,16 @@ def _lineup_player(value: Any) -> LineupPlayer | None:
         substitute=substitute,
         formationPlace=formation_place,
     )
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().casefold() in {"true", "1", "yes", "starter", "starting", "substitute", "bench"}
+    return False
 
 
 def _coach_name(value: Any) -> str | None:

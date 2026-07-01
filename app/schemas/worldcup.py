@@ -20,6 +20,7 @@ class WorldCupGroup(BaseModel):
 class WorldCupBracketMatch(BaseModel):
     eventId: str
     round: str
+    matchNumber: int | None = None
     status: str | None = None
     homeTeam: str | None = None
     awayTeam: str | None = None

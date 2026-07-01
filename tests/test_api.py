@@ -449,6 +449,8 @@ def test_worldcup_bootstrap_returns_compact_library_payload():
     assert body["tournament"]["hostCities"] == 16
     assert body["groups"][0]["code"] == "A"
     assert body["groups"][0]["teams"][0]["name"] == "Germany"
+    assert body["bracket"][0]["matches"][0]["matchNumber"] == 74
+    assert body["bracket"][0]["matches"][0]["homeTeam"] == "Germany"
     assert body["library"][0]["id"] == "pele-legacy"
     assert body["randomFact"]["title"]
 

@@ -19,6 +19,25 @@ from app.services.match_detail import EspnMatchDetailClient
 WORLD_CUP_LEAGUE = "fifa.world"
 WORLD_CUP_FINAL = date(2026, 7, 19)
 
+ROUND_32_FALLBACK = [
+    (74, "Germany", "Paraguay"),
+    (77, "France", "Sweden"),
+    (73, "South Africa", "Canada"),
+    (75, "Netherlands", "Morocco"),
+    (83, "Portugal", "Croatia"),
+    (84, "Spain", "Austria"),
+    (81, "United States", "Bosnia & Herzegovina"),
+    (82, "Belgium", "Senegal"),
+    (76, "Brazil", "Japan"),
+    (78, "Ivory Coast", "Norway"),
+    (79, "Mexico", "Ecuador"),
+    (80, "England", "Congo DR"),
+    (86, "Argentina", "Cabo Verde"),
+    (88, "Australia", "Egypt"),
+    (85, "Switzerland", "Algeria"),
+    (87, "Colombia", "Ghana"),
+]
+
 
 LIBRARY_ITEMS = [
     WorldCupLibraryItem(
@@ -127,6 +146,7 @@ def _bracket(matches: list[ScoreboardMatch]) -> list[WorldCupBracketRound]:
             WorldCupBracketMatch(
                 eventId=match.matchId,
                 round=round_name,
+                matchNumber=_match_number(match),
                 status=match.statusDescription or match.status,
                 homeTeam=match.homeTeam.shortName if match.homeTeam else None,
                 awayTeam=match.awayTeam.shortName if match.awayTeam else None,
@@ -137,6 +157,18 @@ def _bracket(matches: list[ScoreboardMatch]) -> list[WorldCupBracketRound]:
             )
         )
     order = ["Round of 32", "Round of 16", "Quarterfinals", "Semifinals", "Final"]
+    if not rounds.get("Round of 32"):
+        rounds["Round of 32"] = [
+            WorldCupBracketMatch(
+                eventId=f"wc2026-r32-{number}",
+                round="Round of 32",
+                matchNumber=number,
+                status="Round of 32",
+                homeTeam=home,
+                awayTeam=away,
+            )
+            for number, home, away in ROUND_32_FALLBACK
+        ]
     return [WorldCupBracketRound(round=name, matches=rounds.get(name, [])) for name in order if rounds.get(name)]
 
 
@@ -152,6 +184,30 @@ def _round_name(*values: str | None) -> str | None:
         return "Semifinals"
     if "final" in joined:
         return "Final"
+    for value in values:
+        parsed = _parse_date(value)
+        if parsed is None:
+            continue
+        if date(2026, 6, 28) <= parsed <= date(2026, 7, 3):
+            return "Round of 32"
+        if date(2026, 7, 4) <= parsed <= date(2026, 7, 7):
+            return "Round of 16"
+        if date(2026, 7, 9) <= parsed <= date(2026, 7, 11):
+            return "Quarterfinals"
+        if date(2026, 7, 14) <= parsed <= date(2026, 7, 15):
+            return "Semifinals"
+        if parsed == WORLD_CUP_FINAL:
+            return "Final"
+    return None
+
+
+def _match_number(match: ScoreboardMatch) -> int | None:
+    for value in (match.name, match.shortName, match.statusDescription):
+        if not value:
+            continue
+        digits = "".join(ch for ch in value if ch.isdigit())
+        if digits:
+            return int(digits)
     return None
 
 
@@ -164,10 +220,14 @@ def _winner(match: ScoreboardMatch) -> str | None:
 
 
 def _match_date(match: ScoreboardMatch) -> date | None:
-    if not match.kickoff:
+    return _parse_date(match.kickoff)
+
+
+def _parse_date(value: str | None) -> date | None:
+    if not value:
         return None
     try:
-        return datetime.fromisoformat(match.kickoff.replace("Z", "+00:00")).date()
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
     except ValueError:
         return None
 
