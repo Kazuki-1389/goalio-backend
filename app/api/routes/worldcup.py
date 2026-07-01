@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.dependencies import CurrentUser, get_current_user, get_match_detail_client
-from app.schemas.worldcup import WorldCupBootstrap, WorldCupBracketRound, WorldCupGroup, WorldCupLibraryItem
+from app.schemas.worldcup import WorldCupBootstrap, WorldCupBracket, WorldCupGroup, WorldCupLibraryItem
 from app.services.match_detail import EspnMatchDetailClient
 from app.services.worldcup import WorldCupService
 
@@ -35,11 +35,11 @@ def worldcup_groups(
     return service.groups()
 
 
-@router.get("/bracket", response_model=list[WorldCupBracketRound])
+@router.get("/bracket", response_model=WorldCupBracket)
 def worldcup_bracket(
     _: CurrentUser = Depends(get_current_user),
     service: WorldCupService = Depends(get_worldcup_service),
-) -> list[WorldCupBracketRound]:
+) -> WorldCupBracket:
     return service.bracket()
 
 

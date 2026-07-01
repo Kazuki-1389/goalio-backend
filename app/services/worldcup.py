@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+import re
 from typing import Any
 
 from app.schemas.matches import ScoreboardMatch, StandingTeam
 from app.schemas.worldcup import (
     WorldCupBootstrap,
+    WorldCupBracket,
     WorldCupBracketMatch,
-    WorldCupBracketRound,
     WorldCupFact,
     WorldCupGroup,
     WorldCupLibraryItem,
+    WorldCupNextMatchSlot,
     WorldCupTournament,
 )
 from app.services.match_detail import EspnMatchDetailClient
@@ -19,32 +21,16 @@ from app.services.match_detail import EspnMatchDetailClient
 WORLD_CUP_LEAGUE = "fifa.world"
 WORLD_CUP_FINAL = date(2026, 7, 19)
 
-ROUND_32_FALLBACK = [
-    (74, "Germany", "Paraguay"),
-    (77, "France", "Sweden"),
-    (73, "South Africa", "Canada"),
-    (75, "Netherlands", "Morocco"),
-    (83, "Portugal", "Croatia"),
-    (84, "Spain", "Austria"),
-    (81, "United States", "Bosnia & Herzegovina"),
-    (82, "Belgium", "Senegal"),
-    (76, "Brazil", "Japan"),
-    (78, "Ivory Coast", "Norway"),
-    (79, "Mexico", "Ecuador"),
-    (80, "England", "Congo DR"),
-    (86, "Argentina", "Cabo Verde"),
-    (88, "Australia", "Egypt"),
-    (85, "Switzerland", "Algeria"),
-    (87, "Colombia", "Ghana"),
-]
-
 ROUND_MATCH_ORDER = {
-    "Round of 32": [74, 77, 73, 75, 83, 84, 81, 82, 76, 78, 79, 80, 86, 88, 85, 87],
-    "Round of 16": [89, 90, 93, 94, 91, 92, 95, 96],
-    "Quarterfinals": [97, 98, 99, 100],
-    "Semifinals": [101, 102],
-    "Final": [104],
+    "R32": [74, 77, 73, 75, 83, 84, 81, 82, 76, 78, 79, 80, 86, 88, 85, 87],
+    "R16": [89, 90, 93, 94, 91, 92, 95, 96],
+    "QF": [97, 98, 99, 100],
+    "SF": [101, 102],
+    "FINAL": [104],
 }
+ROUND_CODES = ("R32", "R16", "QF", "SF", "FINAL")
+ROUND_SLOT_COUNTS = {"R32": 16, "R16": 8, "QF": 4, "SF": 2, "FINAL": 1}
+NEXT_ROUND = {"R32": "R16", "R16": "QF", "QF": "SF", "SF": "FINAL"}
 
 
 LIBRARY_ITEMS = [
@@ -119,7 +105,7 @@ class WorldCupService:
     def groups(self) -> list[WorldCupGroup]:
         return _groups(self.match_client.standings(WORLD_CUP_LEAGUE).teams)
 
-    def bracket(self) -> list[WorldCupBracketRound]:
+    def bracket(self) -> WorldCupBracket:
         current_date = date.today()
         schedule = self.match_client.schedule(
             WORLD_CUP_LEAGUE,
@@ -144,96 +130,193 @@ def _groups(teams: list[StandingTeam]) -> list[WorldCupGroup]:
     ]
 
 
-def _bracket(matches: list[ScoreboardMatch]) -> list[WorldCupBracketRound]:
-    rounds: dict[str, list[WorldCupBracketMatch]] = {}
+def _bracket(matches: list[ScoreboardMatch]) -> WorldCupBracket:
+    candidates: dict[str, list[tuple[ScoreboardMatch, int | None]]] = {code: [] for code in ROUND_CODES}
+    seen_events: set[str] = set()
     for match in matches:
-        round_name = _round_name(match.statusDescription, match.name, match.kickoff)
-        if round_name is None:
+        if match.matchId in seen_events:
             continue
-        rounds.setdefault(round_name, []).append(
-            WorldCupBracketMatch(
-                eventId=match.matchId,
-                round=round_name,
-                matchNumber=_match_number(match),
-                status=match.statusDescription or match.status,
-                homeTeam=match.homeTeam.shortName if match.homeTeam else None,
-                awayTeam=match.awayTeam.shortName if match.awayTeam else None,
-                homeTeamLogo=match.homeTeam.logo if match.homeTeam else None,
-                awayTeamLogo=match.awayTeam.logo if match.awayTeam else None,
-                homeScore=match.homeTeam.score if match.homeTeam else None,
-                awayScore=match.awayTeam.score if match.awayTeam else None,
-                winnerTeamId=_winner(match),
-                kickoff=match.kickoff,
-            )
-        )
-    order = ["Round of 32", "Round of 16", "Quarterfinals", "Semifinals", "Final"]
-    if not rounds.get("Round of 32"):
-        rounds["Round of 32"] = [
-            WorldCupBracketMatch(
-                eventId=f"wc2026-r32-{number}",
-                round="Round of 32",
-                matchNumber=number,
-                status="Round of 32",
-                homeTeam=home,
-                awayTeam=away,
-            )
-            for number, home, away in ROUND_32_FALLBACK
-        ]
-    return [
-        WorldCupBracketRound(round=name, matches=_ordered_round(name, rounds.get(name, [])))
-        for name in order
-        if rounds.get(name)
-    ]
+        seen_events.add(match.matchId)
+        match_number = _match_number(match)
+        round_code = _round_code(match, match_number)
+        if round_code is not None:
+            candidates[round_code].append((match, match_number))
 
+    normalized: dict[str, list[WorldCupBracketMatch]] = {}
+    for round_code in ROUND_CODES:
+        slot_count = ROUND_SLOT_COUNTS[round_code]
+        slots: list[WorldCupBracketMatch | None] = [None] * slot_count
+        unslotted: list[ScoreboardMatch] = []
+        number_slots = {number: index for index, number in enumerate(ROUND_MATCH_ORDER[round_code])}
 
-def _ordered_round(name: str, matches: list[WorldCupBracketMatch]) -> list[WorldCupBracketMatch]:
-    expected = {number: index for index, number in enumerate(ROUND_MATCH_ORDER.get(name, []))}
-    return sorted(
-        matches,
-        key=lambda match: (
-            expected.get(match.matchNumber or -1, 999),
-            match.kickoff or "",
-            match.eventId,
-        ),
+        for match, match_number in sorted(candidates[round_code], key=lambda item: _candidate_sort_key(item[0])):
+            slot_index = number_slots.get(match_number) if match_number is not None else None
+            if slot_index is None:
+                unslotted.append(match)
+                continue
+            if slots[slot_index] is not None:
+                continue
+            slots[slot_index] = _normalized_match(match, round_code, slot_index)
+
+        remaining = iter(sorted(unslotted, key=_candidate_sort_key))
+        for slot_index in range(slot_count):
+            if slots[slot_index] is None:
+                match = next(remaining, None)
+                slots[slot_index] = (
+                    _normalized_match(match, round_code, slot_index)
+                    if match is not None
+                    else _placeholder_match(round_code, slot_index)
+                )
+        normalized[round_code] = [slot for slot in slots if slot is not None]
+
+    return WorldCupBracket(
+        tournament="FIFA World Cup",
+        bracketType="32_TEAM_KNOCKOUT",
+        rounds=normalized,
     )
 
 
-def _round_name(*values: str | None) -> str | None:
-    joined = " ".join(value or "" for value in values).casefold()
-    if "round of 32" in joined or "r32" in joined:
-        return "Round of 32"
-    if "round of 16" in joined or "r16" in joined:
-        return "Round of 16"
-    if "quarter" in joined:
-        return "Quarterfinals"
-    if "semi" in joined:
-        return "Semifinals"
+def _normalized_match(match: ScoreboardMatch, round_code: str, slot_index: int) -> WorldCupBracketMatch:
+    return WorldCupBracketMatch(
+        eventId=match.matchId,
+        round=round_code,
+        slotIndex=slot_index,
+        status=match.status or match.statusDescription,
+        homeTeam=_normalized_team_name(_team_name(match.homeTeam)),
+        awayTeam=_normalized_team_name(_team_name(match.awayTeam)),
+        homeLogo=match.homeTeam.logo if match.homeTeam else None,
+        awayLogo=match.awayTeam.logo if match.awayTeam else None,
+        homeScore=match.homeTeam.score if match.homeTeam else None,
+        awayScore=match.awayTeam.score if match.awayTeam else None,
+        winnerTeamId=_winner(match),
+        kickoff=match.kickoff,
+        nextMatchSlot=_next_match_slot(round_code, slot_index),
+    )
+
+
+def _placeholder_match(round_code: str, slot_index: int) -> WorldCupBracketMatch:
+    source_round = {"R16": "R32", "QF": "R16", "SF": "QF", "FINAL": "SF"}.get(round_code)
+    if source_round is None:
+        home_team = away_team = "TBD"
+    else:
+        home_team = f"Winner of {source_round} Match {slot_index * 2 + 1}"
+        away_team = f"Winner of {source_round} Match {slot_index * 2 + 2}"
+    return WorldCupBracketMatch(
+        eventId=f"wc2026-{round_code.lower()}-{slot_index}",
+        round=round_code,
+        slotIndex=slot_index,
+        homeTeam=home_team,
+        awayTeam=away_team,
+        status="TBD",
+        nextMatchSlot=_next_match_slot(round_code, slot_index),
+    )
+
+
+def _next_match_slot(round_code: str, slot_index: int) -> WorldCupNextMatchSlot | None:
+    next_round = NEXT_ROUND.get(round_code)
+    if next_round is None:
+        return None
+    return WorldCupNextMatchSlot(
+        round=next_round,
+        slotIndex=slot_index // 2,
+        teamPosition="home" if slot_index % 2 == 0 else "away",
+    )
+
+
+def _round_code(match: ScoreboardMatch, match_number: int | None) -> str | None:
+    if match_number is not None:
+        for round_code, numbers in ROUND_MATCH_ORDER.items():
+            if match_number in numbers:
+                return round_code
+
+    placeholder_round = _placeholder_target_round(_team_name(match.homeTeam), _team_name(match.awayTeam))
+    if placeholder_round is not None:
+        return placeholder_round
+
+    joined = " ".join(value or "" for value in (match.statusDescription, match.name, match.shortName)).casefold()
+    if "round of 32" in joined or re.search(r"\br32\b", joined):
+        return "R32"
+    if "round of 16" in joined or re.search(r"\br16\b", joined):
+        return "R16"
+    if "quarter" in joined or re.search(r"\bqf\b", joined):
+        return "QF"
+    if "semi" in joined or re.search(r"\bsf\b", joined):
+        return "SF"
+    if "third place" in joined:
+        return None
     if "final" in joined:
-        return "Final"
-    for value in values:
-        parsed = _parse_date(value)
-        if parsed is None:
-            continue
-        if date(2026, 6, 28) <= parsed <= date(2026, 7, 3):
-            return "Round of 32"
-        if date(2026, 7, 4) <= parsed <= date(2026, 7, 7):
-            return "Round of 16"
-        if date(2026, 7, 9) <= parsed <= date(2026, 7, 11):
-            return "Quarterfinals"
-        if date(2026, 7, 14) <= parsed <= date(2026, 7, 15):
-            return "Semifinals"
-        if parsed == WORLD_CUP_FINAL:
-            return "Final"
+        return "FINAL"
+
+    parsed = _parse_date(match.kickoff)
+    if parsed is None:
+        return None
+    if date(2026, 6, 28) <= parsed <= date(2026, 7, 3):
+        return "R32"
+    if date(2026, 7, 4) <= parsed <= date(2026, 7, 7):
+        return "R16"
+    if date(2026, 7, 9) <= parsed <= date(2026, 7, 11):
+        return "QF"
+    if date(2026, 7, 14) <= parsed <= date(2026, 7, 15):
+        return "SF"
+    if parsed == WORLD_CUP_FINAL:
+        return "FINAL"
     return None
+
+
+def _placeholder_target_round(*team_names: str | None) -> str | None:
+    joined = " ".join(name or "" for name in team_names).upper()
+    checks = (
+        (r"(?:RD?32|R32)\s*W|WINNER\s+OF\s+R32", "R16"),
+        (r"(?:RD?16|R16)\s*W|WINNER\s+OF\s+R16", "QF"),
+        (r"QF\s*W|WINNER\s+OF\s+QF", "SF"),
+        (r"SF\s*W|WINNER\s+OF\s+SF", "FINAL"),
+    )
+    return next((round_code for pattern, round_code in checks if re.search(pattern, joined)), None)
+
+
+def _normalized_team_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    replacements = ((r"RD?32\s*W\s*(\d+)", "R32"), (r"RD?16\s*W\s*(\d+)", "R16"), (r"QF\s*W\s*(\d+)", "QF"), (r"SF\s*W\s*(\d+)", "SF"))
+    for pattern, source_round in replacements:
+        matched = re.fullmatch(pattern, normalized, flags=re.IGNORECASE)
+        if matched:
+            return f"Winner of {source_round} Match {matched.group(1)}"
+    return normalized
+
+
+def _team_name(team: Any) -> str | None:
+    if team is None:
+        return None
+    return team.shortName or team.name
+
+
+def _candidate_sort_key(match: ScoreboardMatch) -> tuple[int, str, str]:
+    placeholder_count = sum(
+        1
+        for name in (_team_name(match.homeTeam), _team_name(match.awayTeam))
+        if _is_placeholder_team(name)
+    )
+    return placeholder_count, match.kickoff or "", match.matchId
+
+
+def _is_placeholder_team(value: str | None) -> bool:
+    if not value:
+        return True
+    return bool(re.search(r"^(?:RD?32|R32|RD?16|R16|QF|SF|FINAL)\s*W\s*\d+$|^WINNER|^TBD$", value.strip(), re.IGNORECASE))
 
 
 def _match_number(match: ScoreboardMatch) -> int | None:
     for value in (match.name, match.shortName, match.statusDescription):
         if not value:
             continue
-        digits = "".join(ch for ch in value if ch.isdigit())
-        if digits:
-            return int(digits)
+        explicit = re.search(r"(?:MATCH|GAME)\s*#?\s*(\d{2,3})\b|#(\d{2,3})\b", value, re.IGNORECASE)
+        if explicit:
+            return int(next(group for group in explicit.groups() if group is not None))
+        tournament_number = re.search(r"\b(7[3-9]|8\d|9\d|10[0-4])\b", value)
+        if tournament_number:
+            return int(tournament_number.group(1))
     return None
 
 

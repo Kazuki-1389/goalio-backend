@@ -12,7 +12,9 @@ from app.api.dependencies import (
 )
 from app.main import app
 from app.schemas.football import PlayerPage, PlayerResult, TeamPage, TeamResult
+from app.schemas.matches import MatchTeam, ScoreboardMatch
 from app.schemas.profile import ProfileUpsert, UserProfile
+from app.services.worldcup import _bracket
 
 
 class MemoryProfiles:
@@ -455,10 +457,66 @@ def test_worldcup_bootstrap_returns_compact_library_payload():
     assert body["groups"][0]["teams"][0]["name"] == "Germany"
     assert body["groups"][0]["teams"][0]["goalsFor"] == 5
     assert body["groups"][0]["teams"][0]["goalDifference"] == 4
-    assert body["bracket"][0]["matches"][0]["matchNumber"] == 74
-    assert body["bracket"][0]["matches"][0]["homeTeam"] == "Germany"
+    assert body["bracket"]["bracketType"] == "32_TEAM_KNOCKOUT"
+    assert len(body["bracket"]["rounds"]["R32"]) == 16
+    assert len(body["bracket"]["rounds"]["R16"]) == 8
+    assert len(body["bracket"]["rounds"]["QF"]) == 4
+    assert len(body["bracket"]["rounds"]["SF"]) == 2
+    assert len(body["bracket"]["rounds"]["FINAL"]) == 1
+    assert body["bracket"]["rounds"]["FINAL"][0]["slotIndex"] == 0
     assert body["library"][0]["id"] == "pele-legacy"
     assert body["randomFact"]["title"]
+
+
+def test_worldcup_bracket_reclassifies_dirty_placeholder_matches_and_links_slots():
+    real_r32 = ScoreboardMatch(
+        matchId="r32-real",
+        league="fifa.world",
+        name="World Cup Match 74",
+        status="FT",
+        statusDescription="Round of 32",
+        state="post",
+        homeTeam=MatchTeam(id="1", name="Germany", shortName="Germany", score=2),
+        awayTeam=MatchTeam(id="2", name="Paraguay", shortName="Paraguay", score=1),
+        detailApi="/detail/r32-real",
+    )
+    dirty_r16 = ScoreboardMatch(
+        matchId="future-r16",
+        league="fifa.world",
+        name="Mexico vs RD32 W8",
+        status="TBD",
+        statusDescription="Round of 32",
+        state="pre",
+        homeTeam=MatchTeam(id="3", name="Mexico", shortName="Mexico"),
+        awayTeam=MatchTeam(id="placeholder", name="RD32 W8", shortName="RD32 W8"),
+        detailApi="/detail/future-r16",
+    )
+
+    bracket = _bracket([real_r32, dirty_r16])
+
+    assert {round_code: len(items) for round_code, items in bracket.rounds.items()} == {
+        "R32": 16, "R16": 8, "QF": 4, "SF": 2, "FINAL": 1
+    }
+    assert bracket.rounds["R32"][0].eventId == "r32-real"
+    normalized_future = next(item for item in bracket.rounds["R16"] if item.eventId == "future-r16")
+    assert normalized_future.awayTeam == "Winner of R32 Match 8"
+    assert bracket.rounds["R32"][0].nextMatchSlot.slotIndex == 0
+    assert bracket.rounds["R32"][0].nextMatchSlot.teamPosition == "home"
+    assert bracket.rounds["FINAL"][0].homeTeam == "Winner of SF Match 1"
+    assert bracket.rounds["FINAL"][0].nextMatchSlot is None
+
+
+def test_worldcup_bracket_endpoint_returns_normalized_tree_contract():
+    response = client.get("/api/v1/worldcup/bracket")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tournament"] == "FIFA World Cup"
+    assert body["bracketType"] == "32_TEAM_KNOCKOUT"
+    assert list(body["rounds"]) == ["R32", "R16", "QF", "SF", "FINAL"]
+    assert [match["slotIndex"] for match in body["rounds"]["R32"]] == list(range(16))
+    assert body["rounds"]["R32"][1]["nextMatchSlot"] == {
+        "round": "R16", "slotIndex": 0, "teamPosition": "away"
+    }
 
 
 def test_match_scoreboard_rejects_malformed_dates():
