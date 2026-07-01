@@ -526,6 +526,63 @@ def test_worldcup_bracket_endpoint_returns_normalized_tree_contract():
     }
 
 
+def test_worldcup_bracket_uses_google_sky_topology_for_live_espn_events():
+    r32_fixtures = [
+        ("760486", "South Africa", "Canada"),
+        ("760488", "Netherlands", "Morocco"),
+        ("760489", "Germany", "Paraguay"),
+        ("760492", "France", "Sweden"),
+        ("760496", "Portugal", "Croatia"),
+        ("760497", "Spain", "Austria"),
+        ("760494", "United States", "Bosnia-Herzegovina"),
+        ("760493", "Belgium", "Senegal"),
+        ("760487", "Brazil", "Japan"),
+        ("760490", "Ivory Coast", "Norway"),
+        ("760491", "Mexico", "Ecuador"),
+        ("760495", "England", "Congo DR"),
+        ("760500", "Argentina", "Cape Verde"),
+        ("760499", "Australia", "Egypt"),
+        ("760498", "Switzerland", "Algeria"),
+        ("760501", "Colombia", "Ghana"),
+    ]
+
+    def event(event_id: str, home: str, away: str, name: str | None = None) -> ScoreboardMatch:
+        return ScoreboardMatch(
+            matchId=event_id,
+            league="fifa.world",
+            name=name or f"{away} at {home}",
+            status="TBD",
+            statusDescription="Scheduled",
+            state="pre",
+            homeTeam=MatchTeam(id=f"{event_id}-home", name=home, shortName=home),
+            awayTeam=MatchTeam(id=f"{event_id}-away", name=away, shortName=away),
+            detailApi=f"/detail/{event_id}",
+        )
+
+    raw = [event(event_id, home, away) for event_id, home, away in reversed(r32_fixtures)]
+    raw += [
+        event("760505", "Mexico", "Round of 32 8 Winner", "Round of 32 8 Winner at Mexico"),
+        event("760510", "Round of 16 1 Winner", "Round of 16 2 Winner", "Round of 16 2 Winner at Round of 16 1 Winner"),
+        event("760514", "Quarterfinal 1 Winner", "Quarterfinal 2 Winner", "Quarterfinal 2 Winner at Quarterfinal 1 Winner"),
+        event("760517", "Semifinal 1 Winner", "Semifinal 2 Winner", "Semifinal 2 Winner at Semifinal 1 Winner"),
+        event("760516", "Semifinal 1 Loser", "Semifinal 2 Loser", "Semifinal 2 Loser at Semifinal 1 Loser"),
+    ]
+
+    bracket = _bracket(raw)
+
+    assert [(item.homeTeam, item.awayTeam) for item in bracket.rounds["R32"]] == [
+        (home, away) for _, home, away in r32_fixtures
+    ]
+    assert bracket.rounds["R16"][5].eventId == "760505"
+    assert bracket.rounds["R16"][5].awayTeam == "Winner of R32 Match 12"
+    assert bracket.rounds["QF"][0].eventId == "760510"
+    assert bracket.rounds["QF"][0].homeTeam == "Winner of R16 Match 2"
+    assert bracket.rounds["QF"][0].awayTeam == "Winner of R16 Match 1"
+    assert bracket.rounds["SF"][0].eventId == "760514"
+    assert bracket.rounds["FINAL"][0].eventId == "760517"
+    assert all(item.eventId != "760516" for items in bracket.rounds.values() for item in items)
+
+
 def test_match_scoreboard_rejects_malformed_dates():
     response = client.get("/api/v1/matches/fifa.world/scoreboard?dates=2026069")
     assert response.status_code == 422

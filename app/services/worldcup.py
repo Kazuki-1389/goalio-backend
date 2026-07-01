@@ -28,6 +28,21 @@ ROUND_MATCH_ORDER = {
     "SF": [101, 102],
     "FINAL": [104],
 }
+EVENT_SLOT_TOPOLOGY = {
+    "R32": {
+        "760486": 0, "760488": 1, "760489": 2, "760492": 3,
+        "760496": 4, "760497": 5, "760494": 6, "760493": 7,
+        "760487": 8, "760490": 9, "760491": 10, "760495": 11,
+        "760500": 12, "760499": 13, "760498": 14, "760501": 15,
+    },
+    "R16": {
+        "760502": 0, "760503": 1, "760506": 2, "760507": 3,
+        "760504": 4, "760505": 5, "760508": 6, "760509": 7,
+    },
+    "QF": {"760510": 0, "760512": 1, "760511": 2, "760513": 3},
+    "SF": {"760514": 0, "760515": 1},
+    "FINAL": {"760517": 0},
+}
 ROUND_CODES = ("R32", "R16", "QF", "SF", "FINAL")
 ROUND_SLOT_COUNTS = {"R32": 16, "R16": 8, "QF": 4, "SF": 2, "FINAL": 1}
 NEXT_SLOT_TOPOLOGY = {
@@ -164,7 +179,9 @@ def _bracket(matches: list[ScoreboardMatch]) -> WorldCupBracket:
         number_slots = {number: index for index, number in enumerate(ROUND_MATCH_ORDER[round_code])}
 
         for match, match_number in sorted(candidates[round_code], key=lambda item: _candidate_sort_key(item[0])):
-            slot_index = number_slots.get(match_number) if match_number is not None else _placeholder_slot_hint(match, round_code)
+            slot_index = EVENT_SLOT_TOPOLOGY.get(round_code, {}).get(match.matchId)
+            if slot_index is None:
+                slot_index = number_slots.get(match_number) if match_number is not None else _placeholder_slot_hint(match, round_code)
             if slot_index is None:
                 unslotted.append(match)
                 continue
@@ -217,13 +234,19 @@ def _validate_normalized_bracket(rounds: dict[str, list[WorldCupBracketMatch]]) 
 
 
 def _normalized_match(match: ScoreboardMatch, round_code: str, slot_index: int) -> WorldCupBracketMatch:
+    home_team = _normalized_team_name(_team_name(match.homeTeam))
+    away_team = _normalized_team_name(_team_name(match.awayTeam))
+    if _is_placeholder_team(home_team):
+        home_team = _incoming_winner_label(round_code, slot_index, "home") or home_team
+    if _is_placeholder_team(away_team):
+        away_team = _incoming_winner_label(round_code, slot_index, "away") or away_team
     return WorldCupBracketMatch(
         eventId=match.matchId,
         round=round_code,
         slotIndex=slot_index,
         status=match.status or match.statusDescription,
-        homeTeam=_normalized_team_name(_team_name(match.homeTeam)),
-        awayTeam=_normalized_team_name(_team_name(match.awayTeam)),
+        homeTeam=home_team,
+        awayTeam=away_team,
         homeLogo=match.homeTeam.logo if match.homeTeam else None,
         awayLogo=match.awayTeam.logo if match.awayTeam else None,
         homeScore=match.homeTeam.score if match.homeTeam else None,
@@ -283,7 +306,23 @@ def _winner_label(source: tuple[str, int] | None) -> str:
     return f"Winner of {source_round} Match {source_slot + 1}"
 
 
+def _incoming_winner_label(target_round: str, target_slot: int, position: str) -> str | None:
+    source = next(
+        (
+            (source_round, source_slot)
+            for source_round, source_slot, team_position in _incoming_slots(target_round, target_slot)
+            if team_position == position
+        ),
+        None,
+    )
+    return _winner_label(source) if source is not None else None
+
+
 def _round_code(match: ScoreboardMatch, match_number: int | None) -> str | None:
+    for round_code, event_slots in EVENT_SLOT_TOPOLOGY.items():
+        if match.matchId in event_slots:
+            return round_code
+
     if match_number is not None:
         for round_code, numbers in ROUND_MATCH_ORDER.items():
             if match_number in numbers:
@@ -298,6 +337,8 @@ def _round_code(match: ScoreboardMatch, match_number: int | None) -> str | None:
         return "R32"
     if "round of 16" in joined or re.search(r"\br16\b", joined):
         return "R16"
+    if "semifinal" in joined and "loser" in joined:
+        return None
     if "quarter" in joined or re.search(r"\bqf\b", joined):
         return "QF"
     if "semi" in joined or re.search(r"\bsf\b", joined):
@@ -326,10 +367,10 @@ def _round_code(match: ScoreboardMatch, match_number: int | None) -> str | None:
 def _placeholder_target_round(*team_names: str | None) -> str | None:
     joined = " ".join(name or "" for name in team_names).upper()
     checks = (
-        (r"(?:RD?32|R32)\s*W|WINNER\s+OF\s+R32", "R16"),
-        (r"(?:RD?16|R16)\s*W|WINNER\s+OF\s+R16", "QF"),
-        (r"QF\s*W|WINNER\s+OF\s+QF", "SF"),
-        (r"SF\s*W|WINNER\s+OF\s+SF", "FINAL"),
+        (r"(?:RD?32|R32)\s*W|WINNER\s+OF\s+R32|ROUND\s+OF\s+32\s+\d+\s+WINNER", "R16"),
+        (r"(?:RD?16|R16)\s*W|WINNER\s+OF\s+R16|ROUND\s+OF\s+16\s+\d+\s+WINNER", "QF"),
+        (r"QF\s*W|WINNER\s+OF\s+QF|QUARTERFINALS?\s+\d+\s+WINNER", "SF"),
+        (r"SF\s*W|WINNER\s+OF\s+SF|SEMIFINALS?\s+\d+\s+WINNER", "FINAL"),
     )
     return next((round_code for pattern, round_code in checks if re.search(pattern, joined)), None)
 
@@ -337,10 +378,10 @@ def _placeholder_target_round(*team_names: str | None) -> str | None:
 def _placeholder_slot_hint(match: ScoreboardMatch, target_round: str) -> int | None:
     references: list[tuple[str, int]] = []
     patterns = {
-        "R32": r"(?:RD?32|R32)\s*W\s*(\d+)|WINNER\s+OF\s+R32\s+MATCH\s+(\d+)",
-        "R16": r"(?:RD?16|R16)\s*W\s*(\d+)|WINNER\s+OF\s+R16\s+MATCH\s+(\d+)",
-        "QF": r"QF\s*W\s*(\d+)|WINNER\s+OF\s+QF\s+MATCH\s+(\d+)",
-        "SF": r"SF\s*W\s*(\d+)|WINNER\s+OF\s+SF\s+MATCH\s+(\d+)",
+        "R32": r"(?:RD?32|R32)\s*W\s*(\d+)|WINNER\s+OF\s+R32\s+MATCH\s+(\d+)|ROUND\s+OF\s+32\s+(\d+)\s+WINNER",
+        "R16": r"(?:RD?16|R16)\s*W\s*(\d+)|WINNER\s+OF\s+R16\s+MATCH\s+(\d+)|ROUND\s+OF\s+16\s+(\d+)\s+WINNER",
+        "QF": r"QF\s*W\s*(\d+)|WINNER\s+OF\s+QF\s+MATCH\s+(\d+)|QUARTERFINALS?\s+(\d+)\s+WINNER",
+        "SF": r"SF\s*W\s*(\d+)|WINNER\s+OF\s+SF\s+MATCH\s+(\d+)|SEMIFINALS?\s+(\d+)\s+WINNER",
     }
     for team_name in (_team_name(match.homeTeam), _team_name(match.awayTeam)):
         if not team_name:
@@ -365,7 +406,12 @@ def _normalized_team_name(value: str | None) -> str | None:
     if not value:
         return None
     normalized = value.strip()
-    replacements = ((r"RD?32\s*W\s*(\d+)", "R32"), (r"RD?16\s*W\s*(\d+)", "R16"), (r"QF\s*W\s*(\d+)", "QF"), (r"SF\s*W\s*(\d+)", "SF"))
+    replacements = (
+        (r"(?:RD?32\s*W\s*|ROUND\s+OF\s+32\s+)(\d+)(?:\s+WINNER)?", "R32"),
+        (r"(?:RD?16\s*W\s*|ROUND\s+OF\s+16\s+)(\d+)(?:\s+WINNER)?", "R16"),
+        (r"(?:QF\s*W\s*|QUARTERFINALS?\s+)(\d+)(?:\s+WINNER)?", "QF"),
+        (r"(?:SF\s*W\s*|SEMIFINALS?\s+)(\d+)(?:\s+WINNER)?", "SF"),
+    )
     for pattern, source_round in replacements:
         matched = re.fullmatch(pattern, normalized, flags=re.IGNORECASE)
         if matched:
