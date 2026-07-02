@@ -119,7 +119,23 @@ class LineupService:
             provider_result = self.thesportsdb.fetch(meta)
             attempts.extend(provider_result.attempts)
             if _has_real_lineup(provider_result.lineups):
-                lineups, source = provider_result.lineups, "theSportsDb"
+                roster_lineups = detail.lineups
+                if not _has_complete_lineup(provider_result.lineups):
+                    try:
+                        fetched_rosters = self.client.squad_lineups(detail)
+                        if fetched_rosters:
+                            roster_lineups = fetched_rosters
+                    except Exception as exc:
+                        attempts.append({"provider": "espn", "step": "load_team_rosters", "success": False, "reason": str(exc)[:200]})
+                lineups = _complete_partial_lineups(provider_result.lineups, roster_lineups, detail)
+                source = "theSportsDb"
+                attempts.append({
+                    "provider": "generated", "step": "complete_from_team_rosters",
+                    "success": _has_complete_lineup(lineups),
+                    "homeStarters": len(_find_team_lineup(lineups, detail.homeTeam).starters) if _find_team_lineup(lineups, detail.homeTeam) else 0,
+                    "awayStarters": len(_find_team_lineup(lineups, detail.awayTeam).starters) if _find_team_lineup(lineups, detail.awayTeam) else 0,
+                    "reason": "missing provider slots filled from ESPN team rosters",
+                })
             else:
                 lineups = espn_lineups
 
@@ -151,8 +167,16 @@ def _normalize_response(
     final = _is_final(detail)
     live = _is_live(detail)
     complete = len(home.startingXI) == 11 and len(away.startingXI) == 11
-    status = "FINAL" if final and complete else "LIVE" if live and complete else "CONFIRMED" if complete else "PARTIAL" if has_players else "NOT_AVAILABLE"
-    formation_status = "ESTIMATED" if has_players and (home_estimated or away_estimated) else "CONFIRMED" if has_players else "UNKNOWN"
+    estimated = home_estimated or away_estimated
+    status = (
+        "PROBABLE" if complete and estimated
+        else "FINAL" if final and complete
+        else "LIVE" if live and complete
+        else "CONFIRMED" if complete
+        else "PARTIAL" if has_players
+        else "NOT_AVAILABLE"
+    )
+    formation_status = "ESTIMATED" if has_players and estimated else "CONFIRMED" if has_players else "UNKNOWN"
     kickoff = _parse_datetime(detail.kickoff)
     return MatchLineupResponse(
         eventId=event_id,
@@ -236,6 +260,38 @@ def _find_team_lineup(lineups: list[TeamLineup], team: MatchTeam | None) -> Team
         (lineup for lineup in lineups if lineup.teamName and lineup.teamName.casefold() in {team.name.casefold(), (team.shortName or "").casefold()}),
         None,
     )
+
+
+def _complete_partial_lineups(
+    provider_lineups: list[TeamLineup], roster_lineups: list[TeamLineup], detail: MatchDetail
+) -> list[TeamLineup]:
+    """Fill a provider's partial XI from team rosters without inventing players.
+
+    TheSportsDB occasionally publishes only a handful of lineup rows. ESPN's squad
+    endpoint still provides the full registered roster, but without starter markers.
+    We retain every provider-selected starter, then use roster order to fill the XI.
+    The normalizer marks the formation ESTIMATED when coordinates must be generated.
+    """
+    completed: list[TeamLineup] = []
+    for team in (detail.homeTeam, detail.awayTeam):
+        provider = _find_team_lineup(provider_lineups, team)
+        roster = _find_team_lineup(roster_lineups, team)
+        if provider is None:
+            provider = TeamLineup(teamId=team.id if team else None, teamName=team.name if team else None)
+        starters = _dedupe_players(provider.starters)
+        starter_keys = {_player_key(player) for player in starters}
+        candidates = _dedupe_players(
+            (roster.starters + roster.substitutes if roster else []) + provider.substitutes
+        )
+        for player in candidates:
+            if len(starters) >= 11:
+                break
+            if _player_key(player) not in starter_keys:
+                starters.append(player.model_copy(update={"starter": True, "substitute": False, "role": "Starter"}))
+                starter_keys.add(_player_key(player))
+        bench = [player for player in candidates if _player_key(player) not in starter_keys]
+        completed.append(provider.model_copy(update={"starters": starters, "substitutes": bench}))
+    return completed
 
 
 def _dedupe_players(players: list[LineupPlayer]) -> list[LineupPlayer]:
@@ -351,6 +407,10 @@ def _content_hash(response: MatchLineupResponse) -> str:
 def _parse_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def _debug_payload(meta: MatchMeta, cached: CachedLineup | None, attempts: list[dict], response: MatchLineupResponse) -> dict:
@@ -360,7 +420,3 @@ def _debug_payload(meta: MatchMeta, cached: CachedLineup | None, attempts: list[
                       "reason": "cached generated empty allowed to refresh" if cached and not _response_has_players(cached.response) else None},
             "attempts": attempts, "final": {"source": response.source, "status": response.status,
             "homeStarters": len(response.home.startingXI), "awayStarters": len(response.away.startingXI)}}
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-    except ValueError:
-        return None

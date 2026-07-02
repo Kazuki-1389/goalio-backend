@@ -212,6 +212,10 @@ class EspnMatchDetailClient:
     def yahoo_lineups(self, league: str, event_id: str, detail: MatchDetail | None = None) -> list[TeamLineup]:
         return self._lineups_from_yahoo_sports(league, event_id, detail)
 
+    def squad_lineups(self, detail: MatchDetail) -> list[TeamLineup]:
+        """Return registered team rosters for estimating an incomplete XI."""
+        return self._squad_lineups(detail)
+
     def lineup_source_diagnostics(self, league: str, event_id: str, detail: MatchDetail) -> dict[str, dict[str, Any]]:
         """Fetch small, safe diagnostics; never exposes complete third-party bodies."""
         query = _lineup_search_query(league, event_id, detail)

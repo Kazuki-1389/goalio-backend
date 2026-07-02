@@ -28,7 +28,8 @@ def team(name, team_id, starters=1, bench=0):
 
 class Client:
     def __init__(self, value): self.value = value; self.loaded = False
-    def espn_detail(self, league, event_id): self.loaded = True; return self.value
+    def detail(self, league, event_id): self.loaded = True; return self.value
+    def squad_lineups(self, detail): return self.value.lineups
 
 
 class Store:
@@ -55,6 +56,22 @@ def test_empty_espn_uses_thesportsdb_and_passes_espn_meta():
     assert response.source == "theSportsDb"
     assert provider.calls[0].home_team == "England"
     assert len(response.home.startingXI) == 11
+
+
+def test_partial_provider_lineup_is_completed_from_espn_rosters():
+    provider = Provider(ProviderResult([team("England", "448", 3), team("Congo DR", "2850", 2)]))
+    rosters = [team("England", "448", 0, 15), team("Congo DR", "2850", 0, 15)]
+    response = LineupService(Client(detail(rosters)), Store(), provider).get("fifa.world", "760495", True)
+    assert len(response.home.startingXI) == 11
+    assert len(response.away.startingXI) == 11
+    assert response.status == "PROBABLE"
+    assert response.formationStatus == "ESTIMATED"
+    assert "England Starter 0" in {player.name for player in response.home.startingXI}
+
+
+def test_kickoff_is_parsed_for_lineup_response():
+    response = LineupService(Client(detail()), Store(), Provider(ProviderResult())).get("fifa.world", "760495", True)
+    assert response.kickoff == datetime(2026, 7, 1, 16, tzinfo=timezone.utc)
 
 
 def test_roster_without_starter_markers_falls_back():
