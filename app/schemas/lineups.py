@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 LineupStatus = Literal["NOT_AVAILABLE", "PARTIAL", "PROBABLE", "CONFIRMED", "LIVE", "FINAL"]
-LineupSource = Literal["espn", "theSportsDb", "cache", "generated"]
+LineupSource = Literal["espn", "theSportsDb", "footballData", "cache", "generated"]
 FormationStatus = Literal["CONFIRMED", "ESTIMATED", "UNKNOWN"]
 
 

@@ -6,6 +6,7 @@ from app.services.lineup_providers.base import MatchMeta, ProviderResult
 from app.services.lineup_providers.thesportsdb import (
     TheSportsDbProvider, event_search_names, normalize_name, parse_lineup_payload, score_candidate,
 )
+from app.services.lineup_providers.football_data import FootballDataProvider, parse_match_lineup
 from app.services.lineups import CachedLineup, LineupService
 
 
@@ -130,6 +131,36 @@ def test_v2_separated_lineup_parser_and_reversal():
     reversed_result = parse_lineup_payload(payload, meta(), reversed_=True)
     assert normal[0].starters[0].name == "Player E"
     assert reversed_result[1].starters[0].name == "Player E"
+
+
+def test_football_data_match_parser_extracts_lineup_and_bench():
+    payload = {
+        "homeTeam": {"formation": "4-3-3", "coach": {"name": "Coach E"},
+                     "lineup": [{"id": 1, "name": "Keeper E", "position": "Goalkeeper", "shirtNumber": 1}],
+                     "bench": [{"id": 2, "name": "Bench E", "position": "Defence", "shirtNumber": 12}]},
+        "awayTeam": {"formation": "4-4-2", "lineup": [{"id": 3, "name": "Keeper C", "position": "Goalkeeper"}]},
+    }
+    parsed = parse_match_lineup(payload, meta())
+    assert parsed[0].starters[0].name == "Keeper E"
+    assert parsed[0].substitutes[0].name == "Bench E"
+    assert parsed[0].coach == "Coach E"
+
+
+def test_football_data_uses_team_squads_when_lineup_is_unpublished(monkeypatch):
+    class Response:
+        def __init__(self, payload): self.payload = payload
+        def raise_for_status(self): pass
+        def json(self): return self.payload
+    def fake_get(url, **kwargs):
+        if url.endswith("/matches"): return Response({"matches": [{"id": 99, "homeTeam": {"id": 1, "name": "England"}, "awayTeam": {"id": 2, "name": "Congo DR"}}]})
+        if url.endswith("/matches/99"): return Response({"homeTeam": {"id": 1, "lineup": []}, "awayTeam": {"id": 2, "lineup": []}})
+        team_id = 1 if url.endswith("/teams/1") else 2
+        return Response({"squad": [{"id": team_id * 100 + i, "name": f"Squad {team_id}-{i}", "position": "Midfield"} for i in range(15)]})
+    monkeypatch.setattr("app.services.lineup_providers.football_data.httpx.get", fake_get)
+    result = FootballDataProvider("token").fetch(meta())
+    assert len(result.lineups[0].substitutes) == 15
+    assert len(result.lineups[1].substitutes) == 15
+    assert any(attempt["step"] == "team_squads" and attempt["success"] for attempt in result.attempts)
 
 
 def test_debug_urls_mask_api_key(monkeypatch):

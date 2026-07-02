@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
-from app.api.dependencies import CurrentUser, get_current_user, get_lineup_store, get_match_detail_client, get_match_detail_store, get_scoreboard_store, get_thesportsdb_provider
+from app.api.dependencies import CurrentUser, get_current_user, get_football_data_provider, get_lineup_store, get_match_detail_client, get_match_detail_store, get_scoreboard_store, get_thesportsdb_provider
 from app.schemas.lineups import MatchLineupResponse
 from app.schemas.matches import MatchDetail, ScoreboardResponse, StandingsResponse
 from app.services.lineups import LineupService, LineupStore
 from app.services.match_detail import EspnMatchDetailClient, MatchDetailStore, ScoreboardStore, validate_scoreboard_dates
 from app.core.config import get_settings
 from app.services.lineup_providers.thesportsdb import TheSportsDbProvider
+from app.services.lineup_providers.football_data import FootballDataProvider
 
 
 router = APIRouter(
@@ -39,11 +40,12 @@ def match_lineup(
     client: EspnMatchDetailClient = Depends(get_match_detail_client),
     store: LineupStore = Depends(get_lineup_store),
     thesportsdb: TheSportsDbProvider = Depends(get_thesportsdb_provider),
+    football_data: FootballDataProvider = Depends(get_football_data_provider),
     force_refresh: bool = Query(default=False, alias="forceRefresh"),
 ) -> MatchLineupResponse:
     if force_refresh and not (get_settings().lineup_debug or get_settings().app_env == "development"):
         raise HTTPException(403, "forceRefresh is only available in debug/admin mode")
-    return LineupService(client, store, thesportsdb).get(league, event_id, force=force_refresh)
+    return LineupService(client, store, thesportsdb, football_data).get(league, event_id, force=force_refresh)
 
 
 debug_router = APIRouter(prefix="/debug/matches", tags=["debug"])
@@ -57,10 +59,11 @@ def lineup_provider(
     client: EspnMatchDetailClient = Depends(get_match_detail_client),
     store: LineupStore = Depends(get_lineup_store),
     thesportsdb: TheSportsDbProvider = Depends(get_thesportsdb_provider),
+    football_data: FootballDataProvider = Depends(get_football_data_provider),
 ) -> dict:
     if not (get_settings().lineup_debug or get_settings().app_env == "development"):
         raise HTTPException(404, "Not found")
-    service = LineupService(client, store, thesportsdb)
+    service = LineupService(client, store, thesportsdb, football_data)
     service.get(league, event_id, force=True)
     return service.last_debug
 

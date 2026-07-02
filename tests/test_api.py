@@ -6,6 +6,7 @@ from app.api.dependencies import (
     CurrentUser,
     get_current_user,
     get_football_repository,
+    get_football_data_provider,
     get_lineup_store,
     get_match_detail_client,
     get_match_detail_store,
@@ -410,6 +411,7 @@ app.dependency_overrides[get_match_detail_store] = lambda: MemoryMatchDetail()
 app.dependency_overrides[get_lineup_store] = lambda: MemoryLineupStore()
 app.dependency_overrides[get_scoreboard_store] = lambda: MemoryScoreboardStore()
 app.dependency_overrides[get_thesportsdb_provider] = lambda: EmptyTheSportsDb()
+app.dependency_overrides[get_football_data_provider] = lambda: EmptyTheSportsDb()
 quiz_repository = MemoryQuiz()
 app.dependency_overrides[get_quiz_repository] = lambda: quiz_repository
 client = TestClient(app)

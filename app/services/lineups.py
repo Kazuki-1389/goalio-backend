@@ -22,6 +22,7 @@ from app.services.match_detail import EspnMatchDetailClient
 from app.core.config import get_settings
 from app.services.lineup_providers.base import MatchMeta
 from app.services.lineup_providers.thesportsdb import TheSportsDbProvider
+from app.services.lineup_providers.football_data import FootballDataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +83,11 @@ class FirestoreLineupStore:
 
 
 class LineupService:
-    def __init__(self, client: EspnMatchDetailClient, store: LineupStore, thesportsdb: TheSportsDbProvider | None = None):
+    def __init__(self, client: EspnMatchDetailClient, store: LineupStore, thesportsdb: TheSportsDbProvider | None = None, football_data: FootballDataProvider | None = None):
         self.client = client
         self.store = store
         self.thesportsdb = thesportsdb
+        self.football_data = football_data
         self.last_debug: dict = {}
 
     def get(self, league: str, event_id: str, force: bool = False) -> MatchLineupResponse:
@@ -118,17 +120,29 @@ class LineupService:
         if not _has_complete_lineup(lineups) and within_fetch_window and self.thesportsdb:
             provider_result = self.thesportsdb.fetch(meta)
             attempts.extend(provider_result.attempts)
-            if _has_real_lineup(provider_result.lineups):
+            provider_lineups = provider_result.lineups
+            provider_source = "theSportsDb"
+            if not _has_complete_lineup(provider_lineups) and self.football_data:
+                football_result = self.football_data.fetch(meta)
+                attempts.extend(football_result.attempts)
+                if _has_real_lineup(football_result.lineups):
+                    provider_lineups = _complete_partial_lineups(
+                        provider_lineups if _has_real_lineup(provider_lineups) else football_result.lineups,
+                        football_result.lineups,
+                        detail,
+                    )
+                    provider_source = "footballData"
+            if _has_real_lineup(provider_lineups):
                 roster_lineups = detail.lineups
-                if not _has_complete_lineup(provider_result.lineups):
+                if not _has_complete_lineup(provider_lineups):
                     try:
                         fetched_rosters = self.client.squad_lineups(detail)
                         if fetched_rosters:
                             roster_lineups = fetched_rosters
                     except Exception as exc:
                         attempts.append({"provider": "espn", "step": "load_team_rosters", "success": False, "reason": str(exc)[:200]})
-                lineups = _complete_partial_lineups(provider_result.lineups, roster_lineups, detail)
-                source = "theSportsDb"
+                lineups = _complete_partial_lineups(provider_lineups, roster_lineups, detail)
+                source = provider_source
                 attempts.append({
                     "provider": "generated", "step": "complete_from_team_rosters",
                     "success": _has_complete_lineup(lineups),

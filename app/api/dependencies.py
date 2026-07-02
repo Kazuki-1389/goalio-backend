@@ -12,6 +12,7 @@ from app.repositories.profiles import FirestoreProfileRepository, ProfileReposit
 from app.services.match_detail import EspnMatchDetailClient, FirestoreMatchDetailStore, FirestoreScoreboardStore, MatchDetailStore, ScoreboardStore
 from app.services.lineups import FirestoreLineupStore, LineupStore
 from app.services.lineup_providers.thesportsdb import FirestoreProviderMappingStore, TheSportsDbProvider
+from app.services.lineup_providers.football_data import FootballDataProvider
 from app.services.quiz import FirestoreQuizRepository, QuizRepository
 
 
@@ -85,6 +86,12 @@ def get_thesportsdb_provider() -> TheSportsDbProvider:
     settings = get_settings()
     return TheSportsDbProvider(settings.thesportsdb_api_key, settings.thesportsdb_base_url,
                                settings.thesportsdb_use_v2_fallback, FirestoreProviderMappingStore(get_firestore_client))
+
+
+@lru_cache
+def get_football_data_provider() -> FootballDataProvider:
+    settings = get_settings()
+    return FootballDataProvider(settings.football_data_api_key, settings.football_data_base_url)
 
 
 @lru_cache
